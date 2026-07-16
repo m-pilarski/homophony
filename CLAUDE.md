@@ -11,9 +11,10 @@ Note: `.env` is the live config for this host — don't overwrite it; it is giti
 ## Commands
 
 ```bash
-docker compose build
+docker compose pull   # compose.yml (default) runs the CI image from ghcr.io
 docker compose up -d
 docker compose logs -f
+docker compose -f docker-compose.yml build   # local build variant
 ```
 
 Validate a running container:

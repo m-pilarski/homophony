@@ -1,0 +1,45 @@
+# Runs the image published by CI (ghcr.io) instead of building locally.
+# `docker compose up -d` prefers this file over docker-compose.yml; use
+# `docker compose -f docker-compose.yml ...` to build from source instead.
+services:
+  audioclient:
+    image: ghcr.io/m-pilarski/audioclient:latest
+    container_name: audioclient
+    restart: unless-stopped
+    network_mode: host
+    device_cgroup_rules:
+      - "c 116:* rmw"
+    environment:
+      ROOM_NAME: ${ROOM_NAME:-Room}
+      MULTIROOM_NAME: ${MULTIROOM_NAME:-Multiroom}
+      SNAPSERVER: ${SNAPSERVER:-snapserver.local}
+      SNAPSERVER_CONTROL_PORT: ${SNAPSERVER_CONTROL_PORT:-1705}
+      ALSA_SINK: ${ALSA_SINK:-default}
+      DOWNMIX_TO_MONO: ${DOWNMIX_TO_MONO:-0}
+      ENABLE_SNAPCLIENT: ${ENABLE_SNAPCLIENT:-1}
+      ENABLE_SNAPSERVER: ${ENABLE_SNAPSERVER:-0}
+      ENABLE_SPOTIFY: ${ENABLE_SPOTIFY:-1}
+      ENABLE_UPNP: ${ENABLE_UPNP:-1}
+      SPOTIFY_INITIAL_VOLUME: ${SPOTIFY_INITIAL_VOLUME:-70}
+      MULTIROOM_SPOTIFY_INITIAL_VOLUME: ${MULTIROOM_SPOTIFY_INITIAL_VOLUME:-100}
+      SPOTIFYD_DEVICE: ${SPOTIFYD_DEVICE:-audio_output}
+      UPNP_DEVICE: ${UPNP_DEVICE:-}
+      SPOTIFY_USE_MPRIS: ${SPOTIFY_USE_MPRIS:-1}
+      ENABLE_AUDIO_PRIORITY: ${ENABLE_AUDIO_PRIORITY:-1}
+      AUDIO_PRIORITY_GRACE_SECONDS: ${AUDIO_PRIORITY_GRACE_SECONDS:-10}
+      AUDIO_PRIORITY_RESUME_SPOTIFY: ${AUDIO_PRIORITY_RESUME_SPOTIFY:-0}
+      SNAPCLIENT_EXTRA_ARGS: ${SNAPCLIENT_EXTRA_ARGS:-}
+      SNAPSERVER_EXTRA_ARGS: ${SNAPSERVER_EXTRA_ARGS:-}
+      SPOTIFYD_EXTRA_ARGS: ${SPOTIFYD_EXTRA_ARGS:-}
+      UPMPDCLI_EXTRA_ARGS: ${UPMPDCLI_EXTRA_ARGS:-}
+    tmpfs:
+      - /tmp
+      - /run:exec
+    group_add:
+      - "${AUDIO_GID:-29}"
+    volumes:
+      - ${AUDIO_DEVICE:-/dev/snd}:/dev/snd
+      - data:/var/lib/audioclient
+
+volumes:
+  data: {}

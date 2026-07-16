@@ -59,12 +59,19 @@ Those values let the container start without real audio hardware. For Raspberry 
 
 USB audio devices can appear after Docker creates the container. This compose file bind-mounts `/dev/snd` and allows ALSA device major `116` so newly-created sound nodes stay visible after reconnects or card reordering. For explicit ALSA sinks, the container also keeps retrying `ALSA_SINK` and switches PulseAudio back to `audio_output` once the DAC is present.
 
-On the Raspberry Pi:
+On the Raspberry Pi, `compose.yml` (the default file) runs the multi-arch image published by CI to `ghcr.io/m-pilarski/audioclient`:
 
 ```bash
-docker compose build
+docker compose pull
 docker compose up -d
 docker compose logs -f
+```
+
+To build from source instead, use the build variant explicitly:
+
+```bash
+docker compose -f docker-compose.yml build
+docker compose -f docker-compose.yml up -d
 ```
 
 For cross-building from another host with buildx:
