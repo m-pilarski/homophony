@@ -1,0 +1,115 @@
+#!/command/with-contenv bash
+set -euo pipefail
+
+PULSE_SOCKET="${PULSE_RUNTIME_PATH:-/tmp/pulse}/native"
+ALSA_DEVICE="${ALSA_SINK:-default}"
+DOWNMIX_TO_MONO="${DOWNMIX_TO_MONO:-0}"
+SINK_NAME="audio_output"
+HARDWARE_SINK_NAME="audio_output_hardware"
+SNAPCAST_SINK_NAME="snapcast"
+CHECK_INTERVAL="${PULSE_SINK_WATCH_INTERVAL:-5}"
+
+case "${ALSA_DEVICE}" in
+  auto|null)
+    echo "pulse-sink-watch disabled for ALSA_SINK=${ALSA_DEVICE}"
+    exec sleep infinity
+    ;;
+esac
+
+is_truthy() {
+  case "${1,,}" in
+    1|true|yes|on)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+sink_exists() {
+  pactl list short sinks | awk -v sink="$1" '$2 == sink { found = 1 } END { exit !found }'
+}
+
+move_sink_inputs() {
+  local target snapcast input sink client driver
+
+  target="$(pactl list short sinks | awk -v sink="${SINK_NAME}" '$2 == sink { print $1 }')"
+  [ -n "${target}" ] || return 0
+  snapcast="$(pactl list short sinks | awk -v sink="${SNAPCAST_SINK_NAME}" '$2 == sink { print $1 }')"
+
+  pactl list short sink-inputs | while read -r input sink client driver _; do
+    [ -n "${input}" ] || continue
+    [ "${sink}" != "${target}" ] || continue
+    # streams deliberately routed into the snapserver pipe sink stay there
+    [ -z "${snapcast}" ] || [ "${sink}" != "${snapcast}" ] || continue
+    [ "${driver}" = "protocol-native.c" ] || continue
+    pactl move-sink-input "${input}" "${SINK_NAME}" || true
+  done
+}
+
+load_alsa_sink() {
+  local sink_name="$1"
+
+  pactl load-module module-alsa-sink device="${ALSA_DEVICE}" sink_name="${sink_name}" >/dev/null
+}
+
+load_mono_remap_sink() {
+  pactl load-module module-remap-sink \
+    sink_name="${SINK_NAME}" \
+    master="${HARDWARE_SINK_NAME}" \
+    channels=2 \
+    master_channel_map=front-left,front-right \
+    channel_map=mono,mono \
+    remix=yes \
+    sink_properties=device.description=Mono >/dev/null
+}
+
+while true; do
+  until [ -S "${PULSE_SOCKET}" ] && pactl info >/dev/null 2>&1; do
+    echo "Waiting for PulseAudio..."
+    sleep 1
+  done
+
+  if is_truthy "${DOWNMIX_TO_MONO}"; then
+    if ! sink_exists "${HARDWARE_SINK_NAME}"; then
+      echo "PulseAudio hardware sink ${HARDWARE_SINK_NAME} missing; trying ${ALSA_DEVICE}"
+
+      if load_alsa_sink "${HARDWARE_SINK_NAME}"; then
+        echo "Loaded PulseAudio hardware sink ${HARDWARE_SINK_NAME}"
+      else
+        echo "Could not load PulseAudio hardware sink ${HARDWARE_SINK_NAME} from ${ALSA_DEVICE}"
+        sleep "${CHECK_INTERVAL}"
+        continue
+      fi
+    fi
+
+    if ! sink_exists "${SINK_NAME}"; then
+      echo "PulseAudio mono sink ${SINK_NAME} missing; loading remap sink"
+
+      if load_mono_remap_sink; then
+        echo "Loaded PulseAudio mono sink ${SINK_NAME}"
+      else
+        echo "Could not load PulseAudio mono sink ${SINK_NAME}"
+        sleep "${CHECK_INTERVAL}"
+        continue
+      fi
+    fi
+  else
+    if ! sink_exists "${SINK_NAME}"; then
+      echo "PulseAudio sink ${SINK_NAME} missing; trying ${ALSA_DEVICE}"
+
+      if load_alsa_sink "${SINK_NAME}"; then
+        echo "Loaded PulseAudio sink ${SINK_NAME}"
+      else
+        echo "Could not load PulseAudio sink ${SINK_NAME} from ${ALSA_DEVICE}"
+        sleep "${CHECK_INTERVAL}"
+        continue
+      fi
+    fi
+  fi
+
+  pactl set-default-sink "${SINK_NAME}" || true
+  move_sink_inputs
+  sleep "${CHECK_INTERVAL}"
+done

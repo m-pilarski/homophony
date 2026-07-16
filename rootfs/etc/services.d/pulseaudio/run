@@ -1,0 +1,8 @@
+#!/command/with-contenv bash
+set -euo pipefail
+
+exec pulseaudio \
+  --daemonize=no \
+  --log-target=stderr \
+  --exit-idle-time=-1 \
+  --disallow-exit=true

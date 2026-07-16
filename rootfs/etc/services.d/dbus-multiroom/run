@@ -1,0 +1,19 @@
+#!/command/with-contenv bash
+set -euo pipefail
+
+if [ "${ENABLE_SNAPSERVER:-0}" != "1" ] || [ "${ENABLE_SPOTIFY:-1}" != "1" ] || [ "${SPOTIFY_USE_MPRIS:-1}" != "1" ]; then
+  echo "dbus-multiroom disabled"
+  exec sleep infinity
+fi
+
+DBUS_SOCKET="${DBUS_MULTIROOM_BUS_ADDRESS#unix:path=}"
+
+mkdir -p "$(dirname "${DBUS_SOCKET}")"
+rm -f "${DBUS_SOCKET}"
+dbus-uuidgen --ensure
+
+exec dbus-daemon \
+  --session \
+  --nofork \
+  --nopidfile \
+  --address="${DBUS_MULTIROOM_BUS_ADDRESS}"

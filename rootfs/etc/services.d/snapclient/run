@@ -1,0 +1,29 @@
+#!/command/with-contenv bash
+set -euo pipefail
+
+source /usr/local/lib/audioclient/names.sh
+
+if [ "${ENABLE_SNAPCLIENT:-1}" != "1" ]; then
+  echo "snapclient disabled"
+  exec sleep infinity
+fi
+
+PULSE_SOCKET="${PULSE_RUNTIME_PATH:-/tmp/pulse}/native"
+
+until [ -S "${PULSE_SOCKET}" ] && pactl info >/dev/null 2>&1; do
+  echo "Waiting for PulseAudio..."
+  sleep 1
+done
+
+extra_args=()
+if [ -n "${SNAPCLIENT_EXTRA_ARGS:-}" ]; then
+  extra_args=( ${SNAPCLIENT_EXTRA_ARGS} )
+fi
+
+SNAPCLIENT_ID="$(audioclient_snapclient_id)"
+
+exec snapclient \
+  --host "$(audioclient_snapserver_host)" \
+  --hostID "${SNAPCLIENT_ID}" \
+  --player "pulse:server=${PULSE_SERVER:-unix:/tmp/pulse/native}" \
+  "${extra_args[@]}"

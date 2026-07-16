@@ -1,0 +1,61 @@
+#!/command/with-contenv bash
+set -euo pipefail
+
+source /usr/local/lib/audioclient/names.sh
+
+if [ "${ENABLE_SNAPSERVER:-0}" != "1" ] || [ "${ENABLE_SPOTIFY:-1}" != "1" ]; then
+  echo "spotifyd-multiroom disabled"
+  exec sleep infinity
+fi
+
+PULSE_SOCKET="${PULSE_RUNTIME_PATH:-/tmp/pulse}/native"
+
+until [ -S "${PULSE_SOCKET}" ] && pactl info >/dev/null 2>&1; do
+  echo "Waiting for PulseAudio..."
+  sleep 1
+done
+
+DEVICE_NAME="$(audioclient_multiroom_protocol_name Spotify)"
+
+# audio-priority tells this instance's streams apart from the room spotifyd
+# by this property; it must match the jq filter there.
+export PULSE_PROP="audioclient.domain=multiroom"
+export DBUS_SESSION_BUS_ADDRESS="${DBUS_MULTIROOM_BUS_ADDRESS}"
+
+mpris_args=()
+if [ "${SPOTIFY_USE_MPRIS:-1}" = "1" ]; then
+  DBUS_SOCKET="${DBUS_SESSION_BUS_ADDRESS#unix:path=}"
+  mpris_args=( --use-mpris=true --dbus-type session )
+  waited=0
+
+  until [ -S "${DBUS_SOCKET}" ]; do
+    if [ "${waited}" -ge 15 ]; then
+      echo "DBus session bus not available; starting spotifyd without MPRIS"
+      mpris_args=()
+      break
+    fi
+    echo "Waiting for DBus..."
+    sleep 1
+    waited=$((waited + 1))
+  done
+fi
+
+extra_args=()
+if [ -n "${SPOTIFYD_EXTRA_ARGS:-}" ]; then
+  extra_args=( ${SPOTIFYD_EXTRA_ARGS} )
+fi
+
+exec spotifyd \
+  --no-daemon \
+  --backend pulseaudio \
+  --device snapcast \
+  --device-name "${DEVICE_NAME}" \
+  --device-type speaker \
+  --cache-path /var/lib/audioclient/spotifyd-multiroom/cache \
+  --bitrate "${SPOTIFY_BITRATE:-320}" \
+  --audio-format "${SPOTIFY_AUDIO_FORMAT:-s16}" \
+  --volume-controller soft-volume \
+  --volume-normalisation=true \
+  --initial-volume "${MULTIROOM_SPOTIFY_INITIAL_VOLUME:-100}" \
+  "${mpris_args[@]}" \
+  "${extra_args[@]}"

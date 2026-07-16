@@ -1,0 +1,206 @@
+#!/command/with-contenv bash
+set -euo pipefail
+
+if [ "${ENABLE_AUDIO_PRIORITY:-1}" != "1" ]; then
+  echo "audio-priority disabled"
+  exec sleep infinity
+fi
+
+PULSE_SOCKET="${PULSE_RUNTIME_PATH:-/tmp/pulse}/native"
+GRACE="${AUDIO_PRIORITY_GRACE_SECONDS:-10}"
+INTERVAL="${AUDIO_PRIORITY_INTERVAL:-1}"
+RESUME_SPOTIFY="${AUDIO_PRIORITY_RESUME_SPOTIFY:-0}"
+LOCAL_BUS="${DBUS_SESSION_BUS_ADDRESS}"
+MULTIROOM_BUS="${DBUS_MULTIROOM_BUS_ADDRESS}"
+
+until [ -S "${PULSE_SOCKET}" ] && pactl info >/dev/null 2>&1; do
+  echo "Waiting for PulseAudio..."
+  sleep 1
+done
+
+# Two arbitration domains. The room endpoints (spotifyd, mpd on 6600) form the
+# local domain: local UPnP pauses local Spotify, and local activity mutes the
+# local snapclient stream so other Snapcast rooms keep playing. In server mode
+# the multiroom endpoints (spotifyd-multiroom, mpd-multiroom on 6601) form the
+# multiroom domain: they feed one shared pipe, so multiroom UPnP pauses
+# multiroom Spotify to keep them from mixing, but they never mute the local
+# snapclient — this room hears them through it.
+UPNP_DOMAIN=local
+if [ "${UPNP_DEVICE:-}" = "snapcast" ]; then
+  UPNP_DOMAIN=multiroom
+fi
+SPOTIFY_DOMAIN=local
+if [ "${SPOTIFYD_DEVICE:-audio_output}" = "snapcast" ]; then
+  SPOTIFY_DOMAIN=multiroom
+fi
+MULTIROOM_SOURCES=0
+if [ "${ENABLE_SNAPSERVER:-0}" = "1" ]; then
+  MULTIROOM_SOURCES=1
+fi
+
+echo "audio-priority active: upnp > spotify > snapclient, grace ${GRACE}s (room endpoints: upnp ${UPNP_DOMAIN}, spotify ${SPOTIFY_DOMAIN}; multiroom endpoints: $([ "${MULTIROOM_SOURCES}" = "1" ] && echo on || echo off))"
+
+upnp_playing() {
+  [ "${ENABLE_UPNP:-1}" = "1" ] || return 1
+  printf 'status\nclose\n' | nc -w 2 127.0.0.1 "$1" 2>/dev/null \
+    | grep -q '^state: play'
+}
+
+sink_inputs_json() {
+  pactl --format=json list sink-inputs 2>/dev/null || printf '[]'
+}
+
+# The multiroom spotifyd/mpd instances tag their streams with
+# audioclient.domain=multiroom (PULSE_PROP in their run scripts); untagged
+# spotifyd streams belong to the room instance.
+spotify_playing() {
+  jq -e --arg dom "$2" \
+    '[.[] | select(.properties["application.process.binary"] == "spotifyd" and (.corked | not) and ((.properties["audioclient.domain"] // "local") == $dom))] | length > 0' \
+    >/dev/null 2>&1 <<<"$1"
+}
+
+spotifyd_mpris_dest() {
+  DBUS_SESSION_BUS_ADDRESS="$1" dbus-send --session --type=method_call --print-reply \
+    --dest=org.freedesktop.DBus /org/freedesktop/DBus \
+    org.freedesktop.DBus.ListNames 2>/dev/null \
+    | grep -o '"org\.mpris\.MediaPlayer2\.spotifyd[^"]*"' \
+    | tr -d '"' | head -n 1
+}
+
+spotify_mpris_call() {
+  local bus="$1" dest
+
+  dest="$(spotifyd_mpris_dest "${bus}")"
+  [ -n "${dest}" ] || return 1
+  DBUS_SESSION_BUS_ADDRESS="${bus}" dbus-send --session --type=method_call --dest="${dest}" \
+    /org/mpris/MediaPlayer2 "org.mpris.MediaPlayer2.Player.$2" 2>/dev/null
+}
+
+apply_snapclient_mute() {
+  local want="$1" json="$2" jq_want=false input
+
+  [ "${want}" = "1" ] && jq_want=true
+
+  jq -r --argjson want "${jq_want}" \
+    '.[] | select(.properties["application.process.binary"] == "snapclient" and .mute != $want) | .index' \
+    <<<"${json}" | while read -r input; do
+    [ -n "${input}" ] || continue
+    pactl set-sink-input-mute "${input}" "${want}" || true
+  done
+}
+
+last_upnp=0
+last_high=0
+paused_spotify=0
+snap_muted=""
+mr_last_upnp=0
+mr_paused_spotify=0
+
+while true; do
+  now="$(date +%s)"
+  json="$(sink_inputs_json)"
+
+  # --- local domain ---
+  upnp_now=0
+  if upnp_playing 6600; then
+    upnp_now=1
+    last_upnp="${now}"
+  fi
+
+  upnp_hold=0
+  if (( now - last_upnp < GRACE )); then
+    upnp_hold=1
+  fi
+
+  sp_playing=0
+  if spotify_playing "${json}" local; then
+    sp_playing=1
+  fi
+
+  if [ "${upnp_hold}" = "1" ] && [ "${sp_playing}" = "1" ] && [ "${UPNP_DOMAIN}" = "${SPOTIFY_DOMAIN}" ]; then
+    if spotify_mpris_call "${LOCAL_BUS}" Pause; then
+      echo "Paused Spotify (UPnP playback active)"
+      paused_spotify=1
+    else
+      echo "Could not pause Spotify via MPRIS"
+    fi
+  fi
+
+  if [ "${upnp_hold}" = "0" ] && [ "${paused_spotify}" = "1" ]; then
+    if [ "${sp_playing}" = "1" ]; then
+      paused_spotify=0
+    elif [ "${RESUME_SPOTIFY}" = "1" ]; then
+      if spotify_mpris_call "${LOCAL_BUS}" Play; then
+        echo "Resumed Spotify (no UPnP playback for ${GRACE}s)"
+      else
+        echo "Could not resume Spotify via MPRIS"
+      fi
+      paused_spotify=0
+    else
+      paused_spotify=0
+    fi
+  fi
+
+  if { [ "${upnp_now}" = "1" ] && [ "${UPNP_DOMAIN}" = "local" ]; } \
+    || { [ "${sp_playing}" = "1" ] && [ "${SPOTIFY_DOMAIN}" = "local" ]; }; then
+    last_high="${now}"
+  fi
+
+  want_mute=0
+  if (( now - last_high < GRACE )); then
+    want_mute=1
+  fi
+
+  if [ "${want_mute}" != "${snap_muted}" ]; then
+    if [ "${want_mute}" = "1" ]; then
+      echo "Muting local snapclient stream (higher-priority source active)"
+    else
+      echo "Unmuting local snapclient stream"
+    fi
+    snap_muted="${want_mute}"
+  fi
+  apply_snapclient_mute "${want_mute}" "${json}"
+
+  # --- multiroom domain (server mode only) ---
+  if [ "${MULTIROOM_SOURCES}" = "1" ]; then
+    if upnp_playing 6601; then
+      mr_last_upnp="${now}"
+    fi
+
+    mr_upnp_hold=0
+    if (( now - mr_last_upnp < GRACE )); then
+      mr_upnp_hold=1
+    fi
+
+    mr_sp_playing=0
+    if spotify_playing "${json}" multiroom; then
+      mr_sp_playing=1
+    fi
+
+    if [ "${mr_upnp_hold}" = "1" ] && [ "${mr_sp_playing}" = "1" ]; then
+      if spotify_mpris_call "${MULTIROOM_BUS}" Pause; then
+        echo "Paused multiroom Spotify (multiroom UPnP playback active)"
+        mr_paused_spotify=1
+      else
+        echo "Could not pause multiroom Spotify via MPRIS"
+      fi
+    fi
+
+    if [ "${mr_upnp_hold}" = "0" ] && [ "${mr_paused_spotify}" = "1" ]; then
+      if [ "${mr_sp_playing}" = "1" ]; then
+        mr_paused_spotify=0
+      elif [ "${RESUME_SPOTIFY}" = "1" ]; then
+        if spotify_mpris_call "${MULTIROOM_BUS}" Play; then
+          echo "Resumed multiroom Spotify (no multiroom UPnP playback for ${GRACE}s)"
+        else
+          echo "Could not resume multiroom Spotify via MPRIS"
+        fi
+        mr_paused_spotify=0
+      else
+        mr_paused_spotify=0
+      fi
+    fi
+  fi
+
+  sleep "${INTERVAL}"
+done

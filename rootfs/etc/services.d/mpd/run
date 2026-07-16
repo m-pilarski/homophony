@@ -1,0 +1,16 @@
+#!/command/with-contenv bash
+set -euo pipefail
+
+if [ "${ENABLE_UPNP:-1}" != "1" ]; then
+  echo "mpd disabled"
+  exec sleep infinity
+fi
+
+PULSE_SOCKET="${PULSE_RUNTIME_PATH:-/tmp/pulse}/native"
+
+until [ -S "${PULSE_SOCKET}" ] && pactl info >/dev/null 2>&1; do
+  echo "Waiting for PulseAudio..."
+  sleep 1
+done
+
+exec mpd --no-daemon /etc/mpd.conf

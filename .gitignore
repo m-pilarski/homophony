@@ -1,0 +1,4 @@
+# Live host config — use .env.example as the template
+.env
+
+*.log

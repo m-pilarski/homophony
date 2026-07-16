@@ -1,0 +1,203 @@
+#!/command/with-contenv bash
+set -euo pipefail
+
+source /usr/local/lib/audioclient/names.sh
+
+PULSE_DIR="${PULSE_RUNTIME_PATH:-/tmp/pulse}"
+RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/runtime-audio}"
+ALSA_DEVICE="${ALSA_SINK:-default}"
+DOWNMIX_TO_MONO="${DOWNMIX_TO_MONO:-0}"
+SINK_NAME="audio_output"
+HARDWARE_SINK_NAME="audio_output_hardware"
+SNAPCAST_SINK_NAME="snapcast"
+SNAPSERVER_FIFO="/run/snapserver/snapfifo"
+UPNP_FRIENDLY_NAME="$(audioclient_protocol_name UPnP)"
+MULTIROOM_UPNP_NAME="$(audioclient_multiroom_protocol_name UPnP)"
+
+is_truthy() {
+  case "${1,,}" in
+    1|true|yes|on)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+if is_truthy "${DOWNMIX_TO_MONO}"; then
+  case "${ALSA_DEVICE}" in
+    auto)
+      echo "DOWNMIX_TO_MONO=1 is ignored when ALSA_SINK=auto"
+      SINK_CONFIG="load-module module-udev-detect tsched=0"
+      DEFAULT_SINK_CONFIG=""
+      ;;
+    null)
+      SINK_CONFIG="load-module module-null-sink sink_name=${SINK_NAME} channels=1 channel_map=mono sink_properties=device.description=Null"
+      DEFAULT_SINK_CONFIG="set-default-sink ${SINK_NAME}"
+      ;;
+    *)
+      SINK_CONFIG="$(cat <<EOF
+load-module module-alsa-sink device=${ALSA_DEVICE} sink_name=${HARDWARE_SINK_NAME}
+load-module module-remap-sink sink_name=${SINK_NAME} master=${HARDWARE_SINK_NAME} channels=2 master_channel_map=front-left,front-right channel_map=mono,mono remix=yes sink_properties=device.description=Mono
+EOF
+)"
+      DEFAULT_SINK_CONFIG="set-default-sink ${SINK_NAME}"
+      ;;
+  esac
+else
+  case "${ALSA_DEVICE}" in
+    auto)
+      SINK_CONFIG="load-module module-udev-detect tsched=0"
+      DEFAULT_SINK_CONFIG=""
+      ;;
+    null)
+      SINK_CONFIG="load-module module-null-sink sink_name=${SINK_NAME} sink_properties=device.description=Null"
+      DEFAULT_SINK_CONFIG="set-default-sink ${SINK_NAME}"
+      ;;
+    *)
+      SINK_CONFIG="load-module module-alsa-sink device=${ALSA_DEVICE} sink_name=${SINK_NAME}"
+      DEFAULT_SINK_CONFIG="set-default-sink ${SINK_NAME}"
+      ;;
+  esac
+fi
+
+SNAPSERVER_SINK_CONFIG=""
+if [ "${ENABLE_SNAPSERVER:-0}" = "1" ]; then
+  SNAPSERVER_SINK_CONFIG="load-module module-pipe-sink file=${SNAPSERVER_FIFO} sink_name=${SNAPCAST_SINK_NAME} format=s16le rate=48000 channels=2 sink_properties=device.description=Snapcast"
+fi
+
+mkdir -p "${PULSE_DIR}" \
+  "${RUNTIME_DIR}" \
+  /run/mpd \
+  /run/snapserver \
+  /var/lib/audioclient/mpd/music \
+  /var/lib/audioclient/mpd/playlists \
+  /var/lib/audioclient/mpd-multiroom/music \
+  /var/lib/audioclient/mpd-multiroom/playlists \
+  /var/lib/audioclient/upmpdcli/cache \
+  /var/lib/audioclient/upmpdcli-multiroom/cache \
+  /var/lib/audioclient/spotifyd/cache \
+  /var/lib/audioclient/spotifyd-multiroom/cache \
+  /var/lib/audioclient/snapserver
+touch /var/lib/audioclient/mpd/state /var/lib/audioclient/mpd-multiroom/state
+chmod 700 "${RUNTIME_DIR}"
+
+cat > /etc/pulse/client.conf <<EOF
+default-server = unix:${PULSE_DIR}/native
+autospawn = no
+daemon-binary = /bin/true
+enable-shm = false
+EOF
+
+cat > /etc/pulse/daemon.conf <<EOF
+daemonize = no
+exit-idle-time = -1
+resample-method = speex-float-1
+default-sample-rate = 48000
+alternate-sample-rate = 44100
+default-fragments = 4
+default-fragment-size-msec = 25
+realtime-scheduling = no
+EOF
+
+cat > /etc/pulse/default.pa <<EOF
+#!/usr/bin/pulseaudio -nF
+
+load-module module-native-protocol-unix socket=${PULSE_DIR}/native auth-anonymous=1
+${SINK_CONFIG}
+${SNAPSERVER_SINK_CONFIG}
+load-module module-always-sink
+
+${DEFAULT_SINK_CONFIG}
+EOF
+
+MPD_SINK_CONFIG=""
+if [ -n "${UPNP_DEVICE:-}" ]; then
+  MPD_SINK_CONFIG="  sink \"${UPNP_DEVICE}\""
+fi
+
+cat > /etc/mpd.conf <<EOF
+music_directory "/var/lib/audioclient/mpd/music"
+playlist_directory "/var/lib/audioclient/mpd/playlists"
+db_file "/var/lib/audioclient/mpd/database"
+state_file "/var/lib/audioclient/mpd/state"
+sticker_file "/var/lib/audioclient/mpd/sticker.sql"
+pid_file "/run/mpd/mpd.pid"
+bind_to_address "127.0.0.1"
+port "6600"
+auto_update "no"
+
+audio_output {
+  type "pulse"
+  name "PulseAudio"
+  server "${PULSE_SERVER:-unix:${PULSE_DIR}/native}"
+${MPD_SINK_CONFIG}
+  mixer_type "software"
+}
+EOF
+
+cat > /etc/upmpdcli.conf <<EOF
+upnpav = 1
+openhome = 0
+avfriendlyname = ${UPNP_FRIENDLY_NAME}
+ohproductroom = ${UPNP_FRIENDLY_NAME}
+mpdhost = 127.0.0.1
+mpdport = 6600
+mpdtimeoutms = 5000
+ownqueue = 1
+cachedir = /var/lib/audioclient/upmpdcli/cache
+pidfile = /run/upmpdcli.pid
+plgmicrohttpport = 49149
+EOF
+
+cat > /etc/snapserver.conf <<EOF
+[server]
+datadir = /var/lib/audioclient/snapserver
+
+[tcp]
+enabled = true
+
+[http]
+enabled = true
+doc_root = /usr/share/snapserver/snapweb
+
+[stream]
+source = pipe://${SNAPSERVER_FIFO}?name=default
+sampleformat = 48000:16:2
+codec = flac
+EOF
+
+cat > /etc/mpd-multiroom.conf <<EOF
+music_directory "/var/lib/audioclient/mpd-multiroom/music"
+playlist_directory "/var/lib/audioclient/mpd-multiroom/playlists"
+db_file "/var/lib/audioclient/mpd-multiroom/database"
+state_file "/var/lib/audioclient/mpd-multiroom/state"
+sticker_file "/var/lib/audioclient/mpd-multiroom/sticker.sql"
+pid_file "/run/mpd/mpd-multiroom.pid"
+bind_to_address "127.0.0.1"
+port "6601"
+auto_update "no"
+
+audio_output {
+  type "pulse"
+  name "PulseAudio"
+  server "${PULSE_SERVER:-unix:${PULSE_DIR}/native}"
+  sink "${SNAPCAST_SINK_NAME}"
+  mixer_type "software"
+}
+EOF
+
+cat > /etc/upmpdcli-multiroom.conf <<EOF
+upnpav = 1
+openhome = 0
+avfriendlyname = ${MULTIROOM_UPNP_NAME}
+ohproductroom = ${MULTIROOM_UPNP_NAME}
+mpdhost = 127.0.0.1
+mpdport = 6601
+mpdtimeoutms = 5000
+ownqueue = 1
+cachedir = /var/lib/audioclient/upmpdcli-multiroom/cache
+pidfile = /run/upmpdcli-multiroom.pid
+plgmicrohttpport = 49150
+EOF

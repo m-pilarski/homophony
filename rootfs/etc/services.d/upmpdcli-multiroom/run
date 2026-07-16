@@ -1,0 +1,34 @@
+#!/command/with-contenv bash
+set -euo pipefail
+
+if [ "${ENABLE_SNAPSERVER:-0}" != "1" ] || [ "${ENABLE_UPNP:-1}" != "1" ]; then
+  echo "upmpdcli-multiroom disabled"
+  exec sleep infinity
+fi
+
+mpd_ready=0
+for _ in {1..100}; do
+  if { exec 3<>/dev/tcp/127.0.0.1/6601; } 2>/dev/null; then
+    exec 3<&- || true
+    exec 3>&- || true
+    mpd_ready=1
+    break
+  fi
+
+  echo "Waiting for MPD..."
+  sleep 0.2
+done
+
+if [ "${mpd_ready}" != "1" ]; then
+  echo "Timed out waiting for MPD"
+  exit 1
+fi
+
+extra_args=()
+if [ -n "${UPMPDCLI_EXTRA_ARGS:-}" ]; then
+  extra_args=( ${UPMPDCLI_EXTRA_ARGS} )
+fi
+
+exec upmpdcli \
+  -c /etc/upmpdcli-multiroom.conf \
+  "${extra_args[@]}"

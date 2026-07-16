@@ -1,0 +1,14 @@
+#!/command/with-contenv bash
+set -euo pipefail
+
+if [ "${ENABLE_SNAPSERVER:-0}" != "1" ]; then
+  echo "snapserver disabled"
+  exec sleep infinity
+fi
+
+extra_args=()
+if [ -n "${SNAPSERVER_EXTRA_ARGS:-}" ]; then
+  extra_args=( ${SNAPSERVER_EXTRA_ARGS} )
+fi
+
+exec snapserver -c /etc/snapserver.conf "${extra_args[@]}"

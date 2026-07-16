@@ -1,0 +1,36 @@
+#!/command/with-contenv bash
+set -euo pipefail
+
+source /usr/local/lib/audioclient/names.sh
+
+if [ "${ENABLE_SNAPCLIENT:-1}" != "1" ]; then
+  echo "snapclient-name disabled"
+  exec sleep infinity
+fi
+
+SNAPCLIENT_ID="$(audioclient_snapclient_id)"
+SNAPCLIENT_NAME="$(audioclient_protocol_name Snapclient)"
+SNAPSERVER_HOST="$(audioclient_snapserver_host)"
+SNAPSERVER_CONTROL_PORT="${SNAPSERVER_CONTROL_PORT:-1705}"
+named=0
+
+while true; do
+  request="$(jq -cn \
+    --arg id "${SNAPCLIENT_ID}" \
+    --arg name "${SNAPCLIENT_NAME}" \
+    '{id:1,jsonrpc:"2.0",method:"Client.SetName",params:{id:$id,name:$name}}')"
+
+  if response="$(printf '%s\n' "${request}" | nc -w 3 "${SNAPSERVER_HOST}" "${SNAPSERVER_CONTROL_PORT}")" \
+    && printf '%s\n' "${response}" | jq -e --arg name "${SNAPCLIENT_NAME}" '.result.name == $name' >/dev/null; then
+    if [ "${named}" != "1" ]; then
+      echo "Set Snapclient name to ${SNAPCLIENT_NAME}"
+      named=1
+    fi
+    sleep 60
+    continue
+  fi
+
+  named=0
+  echo "Could not set Snapclient name to ${SNAPCLIENT_NAME}"
+  sleep 5
+done
