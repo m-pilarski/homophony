@@ -4,7 +4,7 @@ How to prepare a Raspberry Pi host for the audio client container: packages, mem
 
 ## Automated Setup
 
-Everything below except the [manual steps](#manual-steps) is applied by the setup script in this repository. Prerequisite: Docker CE must already be installed (see [Packages and Docker](#packages-and-docker)).
+Everything below except the [manual steps](#manual-steps) is applied by the setup script in this repository, including installing Docker CE if it is missing.
 
 ```bash
 sudo ./setup-pi.sh
@@ -15,13 +15,13 @@ The script is idempotent — it skips anything already configured, so it is safe
 
 ## Packages and Docker
 
-Docker CE (download.docker.com) is a prerequisite — the setup script checks for it but does not install it. On a fresh Pi:
+The setup script installs Docker CE (engine + compose plugin) from Docker's official apt repository via the convenience script when `docker` is not yet present — equivalent to running manually:
 
 ```bash
 curl -fsSL https://get.docker.com | sh
 ```
 
-Use Docker CE, not Debian's `docker.io`: installing `docker.io` on a CE host makes apt silently remove `docker-ce`.
+This is the supported path on Raspberry Pi OS (32-bit and 64-bit) and keeps Docker updated through apt afterwards. Use Docker CE, not Debian's `docker.io`: installing `docker.io` on a CE host makes apt silently remove `docker-ce`, so the script leaves existing installs untouched (it only warns if it finds `docker.io`).
 
 The remaining host packages and the docker group:
 

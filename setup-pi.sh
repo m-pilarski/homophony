@@ -8,11 +8,6 @@ if [ "$(id -u)" -ne 0 ]; then
   exit 1
 fi
 
-if ! command -v docker >/dev/null 2>&1; then
-  echo "Docker is required but not installed — see PI-SETUP.md." >&2
-  exit 1
-fi
-
 BOOTDIR=/boot/firmware
 [ -d "$BOOTDIR" ] || BOOTDIR=/boot
 TARGET_USER="${SUDO_USER:-}"
@@ -26,7 +21,18 @@ skip() { echo "    already configured: $*"; }
 log "Installing packages"
 apt-get update -qq
 DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-  alsa-utils earlyoom unattended-upgrades
+  alsa-utils curl earlyoom unattended-upgrades
+
+if command -v docker >/dev/null 2>&1; then
+  skip "Docker ($(docker --version 2>/dev/null || echo present))"
+  if dpkg -s docker.io >/dev/null 2>&1; then
+    echo "    WARNING: Debian's docker.io is installed; PI-SETUP.md recommends Docker CE."
+    echo "    Leaving it alone — never install docker.io and docker-ce side by side."
+  fi
+else
+  log "Installing Docker CE from download.docker.com (includes compose plugin)"
+  curl -fsSL https://get.docker.com | sh
+fi
 
 if [ -n "$TARGET_USER" ] && ! id -nG "$TARGET_USER" | grep -qw docker; then
   log "Adding $TARGET_USER to the docker group (log out/in to apply)"

@@ -14,7 +14,7 @@ The image is based on Alpine and uses packaged runtime dependencies; it does not
 
 ## Host Preparation
 
-See [PI-SETUP.md](PI-SETUP.md) for preparing the Raspberry Pi host — `sudo ./setup-pi.sh` automates it (packages, memory tuning, reliability and security hardening); the few remaining manual steps are listed there.
+See [PI-SETUP.md](PI-SETUP.md) for preparing the Raspberry Pi host — `sudo ./setup-pi.sh` automates it (Docker CE, packages, memory tuning, reliability and security hardening); the few remaining manual steps are listed there.
 
 ## Configure
 
