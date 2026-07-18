@@ -14,7 +14,7 @@ The image is based on Alpine and uses packaged runtime dependencies; it does not
 
 ## Host Preparation
 
-See [PI-SETUP.md](PI-SETUP.md) for preparing the Raspberry Pi host — `sudo ./setup-pi.sh` automates it (Docker CE, packages, memory tuning, reliability and security hardening); the few remaining manual steps are listed there. For rooms with a HiFiBerry HAT, `sudo ./setup_hifiberry_dac.sh` configures the card and caps its output volume.
+See [PI-SETUP.md](PI-SETUP.md) for preparing the Raspberry Pi host — `sudo ./setup_pi.sh` automates it (Docker CE, packages, memory tuning, reliability and security hardening); the few remaining manual steps are listed there. For rooms with a HiFiBerry HAT, `sudo ./setup_hifiberry_dac.sh` configures the card and caps its output volume.
 
 ## Configure
 
@@ -70,8 +70,8 @@ docker compose logs -f
 To build from source instead, use the build variant explicitly:
 
 ```bash
-docker compose -f docker-compose.yml build
-docker compose -f docker-compose.yml up -d
+docker compose -f _compose.yml build
+docker compose -f _compose.yml up -d
 ```
 
 For cross-building from another host with buildx:

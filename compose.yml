@@ -1,6 +1,6 @@
 # Runs the image published by CI (ghcr.io) instead of building locally.
-# `docker compose up -d` prefers this file over docker-compose.yml; use
-# `docker compose -f docker-compose.yml ...` to build from source instead.
+# This is the compose default; use `docker compose -f _compose.yml ...`
+# to build from source instead.
 services:
   audioclient:
     image: ghcr.io/m-pilarski/audioclient:latest

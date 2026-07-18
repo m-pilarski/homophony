@@ -7,7 +7,7 @@ How to prepare a Raspberry Pi host for the audio client container: packages, mem
 Everything below except the [manual steps](#manual-steps) is applied by the setup script in this repository, including installing Docker CE if it is missing.
 
 ```bash
-sudo ./setup-pi.sh
+sudo ./setup_pi.sh
 sudo reboot   # if the script reports a reboot is needed
 ```
 
@@ -93,7 +93,7 @@ sudo systemctl enable --now earlyoom
 
 Check `/proc/cmdline` for `cgroup_disable=memory`. With that flag, Docker memory limits are silently ignored and systemd-oomd cannot work. Remove the token from `/boot/firmware/cmdline.txt` (a single line — edit carefully) and reboot.
 
-Then cap the container in `docker-compose.yml` so a leak cannot take down the host:
+Then cap the container in the compose file so a leak cannot take down the host:
 
 ```yaml
 services:
