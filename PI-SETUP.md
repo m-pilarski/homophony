@@ -43,6 +43,18 @@ getent group audio
 
 Set `AUDIO_GID` in `.env` to the numeric GID from `getent group audio`; Raspberry Pi OS and Debian commonly use `29`.
 
+## HiFiBerry DAC (GPIO)
+
+For rooms with a HiFiBerry HAT instead of USB audio, `setup_hifiberry_dac.sh` configures the card and caps its hardware output volume (analogue stage −6 dB where present, plus digital volume — default 70%), so the Snapcast per-room slider operates below a sane maximum:
+
+```bash
+sudo ./setup_hifiberry_dac.sh              # default 70% ceiling
+sudo ./setup_hifiberry_dac.sh 80           # custom ceiling
+sudo ./setup_hifiberry_dac.sh 70 hifiberry-dac   # EEPROM-less boards, then reboot
+```
+
+Boards with a HAT EEPROM (e.g. DAC2 Pro) are detected by the firmware automatically; EEPROM-less boards (DAC+ Zero, MiniAmp) need the `dtoverlay` argument once, then a reboot and a re-run for the volume limit. The mixer state is persisted with `alsactl store`. Afterwards set `ALSA_SINK=plughw:CARD=sndrpihifiberry,DEV=0` in `.env` and apply with `docker compose up -d`.
+
 ## Memory
 
 ### GPU memory split
