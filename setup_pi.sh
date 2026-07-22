@@ -83,7 +83,20 @@ if [ -f /etc/dphys-swapfile ]; then
   fi
 elif [ -f /swapfile ]; then
   SWAP_MB=$(( $(stat -c%s /swapfile) / 1024 / 1024 ))
-  if [ "$SWAP_MB" -le 640 ]; then
+  swapfile_active() { awk '$1 == "/swapfile" { f = 1 } END { exit !f }' /proc/swaps; }
+  other_swap_active() { [ "$(awk 'NR > 1' /proc/swaps | wc -l)" -gt 0 ]; }
+  if ! swapfile_active; then
+    # Not active swap (e.g. zram is handling swap): an inert leftover that only
+    # wastes SD space and risks accidental activation of the exact large SD
+    # swap this section exists to prevent. Reclaim it, but only while some other
+    # swap is active so we never leave the Pi with none.
+    if other_swap_active; then
+      log "Removing inert /swapfile (${SWAP_MB}M; active swap: $(awk 'NR==2 {print $1}' /proc/swaps))"
+      rm -f /swapfile
+    else
+      skip "inert /swapfile left in place (no other active swap)"
+    fi
+  elif [ "$SWAP_MB" -le 640 ]; then
     skip "swapfile size (${SWAP_MB}M)"
   else
     AVAIL_MB=$(awk '/MemAvailable/ {print int($2/1024)}' /proc/meminfo)
