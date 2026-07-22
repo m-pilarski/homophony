@@ -14,7 +14,7 @@ The image is based on Alpine and uses packaged runtime dependencies; it does not
 
 ## Host Preparation
 
-See [PI-SETUP.md](PI-SETUP.md) for preparing the Raspberry Pi host — `sudo ./setup_pi.sh` automates it (Docker CE, packages, memory tuning, reliability and security hardening); the few remaining manual steps are listed there. For rooms with a HiFiBerry HAT, `sudo ./setup_hifiberry_dac.sh` configures the card and caps its output volume.
+See [PI-SETUP.md](PI-SETUP.md) for preparing the Raspberry Pi host — `sudo ./setup_pi.sh` automates it (Docker CE, packages, memory tuning, reliability and security hardening, nightly image auto-update); the few remaining manual steps are listed there. For rooms with a HiFiBerry HAT, `sudo ./setup_hifiberry_dac.sh` configures the card and caps its output volume.
 
 ## Configure
 
@@ -100,6 +100,12 @@ Expected behavior:
 - UPnP controllers show a `${ROOM_NAME} UPnP` renderer on the LAN.
 
 The UPnP renderer is implemented with `upmpdcli` controlling a local MPD instance whose audio output is PulseAudio. This replaces `gmrender-resurrect` because Alpine does not package gmrender.
+
+## Health And Auto-Recovery
+
+The container ships a `HEALTHCHECK` that functionally probes every enabled service (PulseAudio responds, MPD answers its port, snapserver/upmpdcli hold their ports, Spotify/DBus are up), so `docker compose ps` shows `(healthy)` and `docker inspect --format '{{json .State.Health}}' audioclient` explains any failure. It intentionally stays healthy through self-healing transients — a USB DAC reconnecting, or the server briefly unreachable — so it does not trigger needless restarts.
+
+Because Docker does not restart a container on health status alone, the compose file also runs a small `willfarrell/autoheal` companion (`audioclient-autoheal`) that restarts the container if it stays unhealthy. Tune with `AUTOHEAL_INTERVAL` / `AUTOHEAL_START_PERIOD` in `.env`. If the host already runs a global autoheal, this per-stack one is redundant but harmless; remove the `autoheal` service from the compose file to rely on the global one instead.
 
 ## Snapcast Server
 

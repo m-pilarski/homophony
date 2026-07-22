@@ -1,12 +1,22 @@
 #!/usr/bin/env bash
 # Idempotent Raspberry Pi host setup for the audio client stack.
 # Documented in PI-SETUP.md — keep the two in sync.
+#
+# Usage: sudo ./setup_pi.sh [update-time]
+#   update-time  HH:MM for the nightly container image update (default 05:00)
 set -euo pipefail
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "Run with sudo: sudo $0" >&2
   exit 1
 fi
+
+UPDATE_TIME="${1:-05:00}"
+if ! [[ "$UPDATE_TIME" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]]; then
+  echo "Invalid update time '$UPDATE_TIME' — expected HH:MM (24h)" >&2
+  exit 1
+fi
+STACK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 BOOTDIR=/boot/firmware
 [ -d "$BOOTDIR" ] || BOOTDIR=/boot
@@ -165,6 +175,55 @@ if [ "$DOCKER_CHANGED" = "changed" ]; then
 else
   skip "Docker daemon.json"
 fi
+
+### Auto-update -----------------------------------------------------------
+
+desired_service="$(cat <<EOF
+[Unit]
+Description=Update audioclient container image
+Wants=network-online.target
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=${STACK_DIR}
+ExecStart=/usr/bin/docker compose pull --quiet
+ExecStart=/usr/bin/docker compose up -d
+EOF
+)"
+
+desired_timer="$(cat <<EOF
+[Unit]
+Description=Nightly audioclient container image update
+
+[Timer]
+OnCalendar=*-*-* ${UPDATE_TIME}:00
+RandomizedDelaySec=300
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+)"
+
+units_changed=0
+if [ "$(cat /etc/systemd/system/audioclient-update.service 2>/dev/null)" != "$desired_service" ]; then
+  printf '%s\n' "$desired_service" > /etc/systemd/system/audioclient-update.service
+  units_changed=1
+fi
+if [ "$(cat /etc/systemd/system/audioclient-update.timer 2>/dev/null)" != "$desired_timer" ]; then
+  printf '%s\n' "$desired_timer" > /etc/systemd/system/audioclient-update.timer
+  units_changed=1
+fi
+
+if [ "$units_changed" = "1" ]; then
+  log "Configuring nightly image update at ${UPDATE_TIME} (±5 min)"
+  systemctl daemon-reload
+else
+  skip "auto-update timer (${UPDATE_TIME})"
+fi
+systemctl enable --now --quiet audioclient-update.timer
 
 ### Security --------------------------------------------------------------
 

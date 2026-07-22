@@ -40,6 +40,24 @@ services:
     volumes:
       - ${AUDIO_DEVICE:-/dev/snd}:/dev/snd
       - data:/var/lib/audioclient
+    labels:
+      # Restarted by the autoheal companion when the image HEALTHCHECK
+      # (audioclient-healthcheck) reports unhealthy.
+      - autoheal=true
+
+  # Watches this host's containers and restarts any labelled autoheal=true
+  # that Docker marks unhealthy. Docker does not restart on health alone.
+  autoheal:
+    image: willfarrell/autoheal:latest
+    container_name: audioclient-autoheal
+    restart: unless-stopped
+    network_mode: none
+    environment:
+      AUTOHEAL_CONTAINER_LABEL: autoheal
+      AUTOHEAL_INTERVAL: ${AUTOHEAL_INTERVAL:-30}
+      AUTOHEAL_START_PERIOD: ${AUTOHEAL_START_PERIOD:-120}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
 
 volumes:
   data: {}

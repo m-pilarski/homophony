@@ -20,8 +20,10 @@ docker compose -f _compose.yml build   # local build variant
 Validate a running container:
 
 ```bash
-docker compose ps
+docker compose ps                                        # STATUS shows (healthy)
 docker logs audioclient --tail=200
+docker inspect --format '{{json .State.Health}}' audioclient | jq
+docker exec -it audioclient /usr/local/bin/audioclient-healthcheck
 docker exec -it audioclient pactl info
 docker exec -it audioclient pactl list short sinks
 docker exec -it audioclient pactl list short sink-inputs
@@ -66,6 +68,10 @@ Server mode (`ENABLE_SNAPSERVER=1`, one device per house): snapserver runs in th
 - Every audio client waits for the pulse socket plus a successful `pactl info` before `exec`ing the real process.
 - `pulse-sink-watch` is the recovery loop for USB DACs that appear late or reconnect: it reloads the ALSA sink, re-creates the mono remap, resets the default sink, and moves orphaned sink-inputs back to `audio_output`. Related host-side piece: the compose file bind-mounts `/dev/snd` and allows char device major 116 (`device_cgroup_rules`) so new sound nodes stay visible without recreating the container.
 - `snapclient-name` pushes the friendly name to the snapserver's JSON-RPC control port (1705) in an endless retry loop, since snapclient itself only sends a hostID.
+
+### Health check
+
+`rootfs/usr/local/bin/audioclient-healthcheck` is the image `HEALTHCHECK` (30s interval, 90s start-period, 3 retries). It probes each **enabled** service functionally, gated on the same `ENABLE_*` env the run scripts use: `pactl info` for pulseaudio; s6 `up` for snapclient/spotifyd(-multiroom); the MPD greeting on 6600/6601; a TCP connect to snapserver's 1704/1705/1780 and upmpdcli's http 49149/49150; the DBus session-socket(s) when MPRIS is on. It deliberately does **not** fail on self-healing transients — a missing `audio_output` sink (DAC reconnecting, handled by `pulse-sink-watch`) or snapclient not being connected (server rebooting) — since those would restart-storm rather than recover. The compose files add an `autoheal=true` label plus a `willfarrell/autoheal` companion container (Docker does not restart on health alone); keep both compose files in sync.
 
 ### Runtime constraints
 

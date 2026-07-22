@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# Functional health check for the audioclient container.
+#
+# Exit 0 = healthy, non-zero = unhealthy. Docker's --retries/--start-period
+# debounce boot races and momentary blips; a sustained failure marks the
+# container unhealthy and autoheal restarts it.
+#
+# Only failures a container restart can actually clear are fatal here. Two
+# self-healing transients are deliberately NOT checked, because failing on them
+# would restart-storm the container instead of letting the existing recovery
+# loops work:
+#   - a missing audio_output sink (USB DAC reconnecting; pulse-sink-watch
+#     rebuilds the sink chain on its own)
+#   - snapclient not being connected to the server (server rebooting; snapclient
+#     retries the connection indefinitely)
+set -uo pipefail
+
+on() { [ "${1:-0}" = "1" ]; }
+
+problems=()
+
+svc_up() {
+  [ "$(s6-svstat -o up "/run/service/$1" 2>/dev/null)" = "true" ]
+}
+
+tcp_open() {
+  timeout 3 bash -c "exec 3<>/dev/tcp/127.0.0.1/$1" 2>/dev/null
+}
+
+mpd_ok() {
+  local line
+  line="$(timeout 3 bash -c "exec 3<>/dev/tcp/127.0.0.1/$1 && head -n1 <&3" 2>/dev/null)" || return 1
+  [[ "$line" == OK\ MPD* ]]
+}
+
+dbus_ok() {
+  [ -S "${1#unix:path=}" ]
+}
+
+# PulseAudio — the shared mixer everything feeds; always required.
+timeout 5 pactl info >/dev/null 2>&1 || problems+=("pulseaudio unresponsive")
+
+# Snapcast client — process liveness only; connection state is a transient.
+if on "${ENABLE_SNAPCLIENT:-1}"; then
+  svc_up snapclient || problems+=("snapclient down")
+fi
+
+# Snapcast server — the whole house depends on its ports being up.
+if on "${ENABLE_SNAPSERVER:-0}"; then
+  for p in 1704 1705 1780; do
+    tcp_open "$p" || problems+=("snapserver port $p not listening")
+  done
+fi
+
+# Spotify Connect — process liveness plus, with MPRIS, its control bus.
+if on "${ENABLE_SPOTIFY:-1}"; then
+  svc_up spotifyd || problems+=("spotifyd down")
+  if on "${ENABLE_SNAPSERVER:-0}"; then
+    svc_up spotifyd-multiroom || problems+=("spotifyd-multiroom down")
+  fi
+  if on "${SPOTIFY_USE_MPRIS:-1}"; then
+    dbus_ok "${DBUS_SESSION_BUS_ADDRESS:-}" || problems+=("dbus session bus missing")
+    if on "${ENABLE_SNAPSERVER:-0}"; then
+      dbus_ok "${DBUS_MULTIROOM_BUS_ADDRESS:-}" || problems+=("dbus-multiroom bus missing")
+    fi
+  fi
+fi
+
+# UPnP renderer — mpd answers its control port, upmpdcli holds its http port.
+if on "${ENABLE_UPNP:-1}"; then
+  mpd_ok 6600 || problems+=("mpd not responding on 6600")
+  tcp_open 49149 || problems+=("upmpdcli not listening on 49149")
+  if on "${ENABLE_SNAPSERVER:-0}"; then
+    mpd_ok 6601 || problems+=("mpd-multiroom not responding on 6601")
+    tcp_open 49150 || problems+=("upmpdcli-multiroom not listening on 49150")
+  fi
+fi
+
+if [ "${#problems[@]}" -gt 0 ]; then
+  printf 'unhealthy: %s\n' "$(IFS=';'; echo "${problems[*]}")"
+  exit 1
+fi
+
+echo "healthy"
