@@ -98,7 +98,7 @@ Then cap the container in the compose file so a leak cannot take down the host:
 
 ```yaml
 services:
-  audioclient:
+  homophony:
     mem_limit: 256m
 ```
 
@@ -169,13 +169,13 @@ Then `sudo systemctl restart docker`. Log options apply only to newly created co
 
 ### Automatic container image updates
 
-The script installs a systemd service + timer (`audioclient-update.timer`) that runs `docker compose pull && docker compose up -d` in the stack directory every night — by default at 05:00, configurable via the script's first argument (`sudo ./setup_pi.sh 03:30`). Re-running the script with a different time updates the timer. `up -d` recreates the container only when CI has published a new image, so quiet nights are a single registry check; `Persistent=true` catches up after downtime and `RandomizedDelaySec` spreads the fleet's pulls over five minutes.
+The script installs a systemd service + timer (`homophony-update.timer`) that runs `docker compose pull && docker compose up -d` in the stack directory every night — by default at 05:00, configurable via the script's first argument (`sudo ./setup_pi.sh 03:30`). Re-running the script with a different time updates the timer. `up -d` recreates the container only when CI has published a new image, so quiet nights are a single registry check; `Persistent=true` catches up after downtime and `RandomizedDelaySec` spreads the fleet's pulls over five minutes.
 
 Inspect with:
 
 ```bash
-systemctl list-timers audioclient-update.timer
-journalctl -u audioclient-update.service --since -7d
+systemctl list-timers homophony-update.timer
+journalctl -u homophony-update.service --since -7d
 ```
 
 ## Security

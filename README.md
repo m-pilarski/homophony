@@ -19,7 +19,7 @@ See [PI-SETUP.md](PI-SETUP.md) for preparing the Raspberry Pi host — `sudo ./s
 ## Configure
 
 ```bash
-cd stacks/audioclient
+cd stacks/homophony
 cp .env.example .env
 nano .env
 ```
@@ -59,7 +59,7 @@ Those values let the container start without real audio hardware. For Raspberry 
 
 USB audio devices can appear after Docker creates the container. This compose file bind-mounts `/dev/snd` and allows ALSA device major `116` so newly-created sound nodes stay visible after reconnects or card reordering. For explicit ALSA sinks, the container also keeps retrying `ALSA_SINK` and switches PulseAudio back to `audio_output` once the DAC is present.
 
-On the Raspberry Pi, `compose.yml` (the default file) runs the multi-arch image published by CI to `ghcr.io/m-pilarski/audioclient`:
+On the Raspberry Pi, `compose.yml` (the default file) runs the multi-arch image published by CI to `ghcr.io/m-pilarski/homophony`:
 
 ```bash
 docker compose pull
@@ -77,18 +77,18 @@ docker compose -f _compose.yml up -d
 For cross-building from another host with buildx:
 
 ```bash
-docker buildx build --platform linux/arm/v7,linux/arm64 -t local/audioclient:latest .
+docker buildx build --platform linux/arm/v7,linux/arm64 -t local/homophony:latest .
 ```
 
 ## Validate
 
 ```bash
 docker compose ps
-docker logs audioclient --tail=200
-docker exec -it audioclient pactl info
-docker exec -it audioclient pactl list short sinks
-docker exec -it audioclient pactl list short sink-inputs
-docker exec -it audioclient snapclient --list
+docker logs homophony --tail=200
+docker exec -it homophony pactl info
+docker exec -it homophony pactl list short sinks
+docker exec -it homophony pactl list short sink-inputs
+docker exec -it homophony snapclient --list
 ```
 
 Expected behavior:
@@ -103,15 +103,15 @@ The UPnP renderer is implemented with `upmpdcli` controlling a local MPD instanc
 
 ## Health And Auto-Recovery
 
-The container ships a `HEALTHCHECK` that functionally probes every enabled service (PulseAudio responds, MPD answers its port, snapserver/upmpdcli hold their ports, Spotify/DBus are up), so `docker compose ps` shows `(healthy)` and `docker inspect --format '{{json .State.Health}}' audioclient` explains any failure. It intentionally stays healthy through self-healing transients — a USB DAC reconnecting, or the server briefly unreachable — so it does not trigger needless restarts.
+The container ships a `HEALTHCHECK` that functionally probes every enabled service (PulseAudio responds, MPD answers its port, snapserver/upmpdcli hold their ports, Spotify/DBus are up), so `docker compose ps` shows `(healthy)` and `docker inspect --format '{{json .State.Health}}' homophony` explains any failure. It intentionally stays healthy through self-healing transients — a USB DAC reconnecting, or the server briefly unreachable — so it does not trigger needless restarts.
 
-Because Docker does not restart a container on health status alone, the compose file also runs a small `willfarrell/autoheal` companion (`audioclient-autoheal`) that restarts the container if it stays unhealthy. Tune with `AUTOHEAL_INTERVAL` / `AUTOHEAL_START_PERIOD` in `.env`. If the host already runs a global autoheal, this per-stack one is redundant but harmless; remove the `autoheal` service from the compose file to rely on the global one instead.
+Because Docker does not restart a container on health status alone, the compose file also runs a small `willfarrell/autoheal` companion (`homophony-autoheal`) that restarts the container if it stays unhealthy. Tune with `AUTOHEAL_INTERVAL` / `AUTOHEAL_START_PERIOD` in `.env`. If the host already runs a global autoheal, this per-stack one is redundant but harmless; remove the `autoheal` service from the compose file to rely on the global one instead.
 
 ## Snapcast Server
 
 Set `ENABLE_SNAPSERVER=1` on the one device that should act as the Snapcast server for the house. That is the only setting the server device needs: its own snapclient (and the name pusher) automatically connect to `127.0.0.1` instead of `SNAPSERVER`, so the device stays a normal room while serving the others. On every other device, point `SNAPSERVER` at the server host's IP or hostname.
 
-With host networking the server exposes the standard Snapcast ports: `1704` (stream), `1705` (TCP JSON-RPC control), and `1780` (HTTP JSON-RPC, used by e.g. Home Assistant and the Android app). Alpine's package only ships a placeholder page instead of the Snapweb UI; to get the real web UI, bind-mount a [Snapweb](https://github.com/badaix/snapweb) build over `/usr/share/snapserver/snapweb`. Client names, volumes, and groups are persisted in the `data` volume under `/var/lib/audioclient/snapserver`.
+With host networking the server exposes the standard Snapcast ports: `1704` (stream), `1705` (TCP JSON-RPC control), and `1780` (HTTP JSON-RPC, used by e.g. Home Assistant and the Android app). Alpine's package only ships a placeholder page instead of the Snapweb UI; to get the real web UI, bind-mount a [Snapweb](https://github.com/badaix/snapweb) build over `/usr/share/snapserver/snapweb`. Client names, volumes, and groups are persisted in the `data` volume under `/var/lib/homophony/snapserver`.
 
 The served audio comes from an extra PulseAudio sink named `snapcast` that only exists on the server device: everything played into it is encoded (FLAC, 48 kHz stereo) and distributed to all Snapcast clients, including the local one. Server mode automatically starts a second, house-wide set of source endpoints feeding this sink, next to the device's normal room endpoints:
 
@@ -142,7 +142,7 @@ If no audio device appears inside the container:
 
 ```bash
 ls -l /dev/snd
-docker exec -it audioclient ls -l /dev/snd
+docker exec -it homophony ls -l /dev/snd
 getent group audio
 ```
 
@@ -150,7 +150,7 @@ If PulseAudio starts but exposes no useful sink, compare the host and container 
 
 ```bash
 aplay -L
-docker exec -it audioclient aplay -L
+docker exec -it homophony aplay -L
 ```
 
 Then set `ALSA_SINK` to a working output name, for example `plughw:CARD=Device,DEV=0`.

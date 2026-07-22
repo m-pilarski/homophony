@@ -15,6 +15,6 @@ done
 
 # audio-priority tells this instance's streams apart from the room MPD
 # by this property; it must match the jq filter there.
-export PULSE_PROP="audioclient.domain=multiroom"
+export PULSE_PROP="homophony.domain=multiroom"
 
 exec mpd --no-daemon /etc/mpd-multiroom.conf

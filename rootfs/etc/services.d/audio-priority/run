@@ -51,11 +51,11 @@ sink_inputs_json() {
 }
 
 # The multiroom spotifyd/mpd instances tag their streams with
-# audioclient.domain=multiroom (PULSE_PROP in their run scripts); untagged
+# homophony.domain=multiroom (PULSE_PROP in their run scripts); untagged
 # spotifyd streams belong to the room instance.
 spotify_playing() {
   jq -e --arg dom "$2" \
-    '[.[] | select(.properties["application.process.binary"] == "spotifyd" and (.corked | not) and ((.properties["audioclient.domain"] // "local") == $dom))] | length > 0' \
+    '[.[] | select(.properties["application.process.binary"] == "spotifyd" and (.corked | not) and ((.properties["homophony.domain"] // "local") == $dom))] | length > 0' \
     >/dev/null 2>&1 <<<"$1"
 }
 

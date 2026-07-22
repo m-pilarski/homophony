@@ -1,12 +1,12 @@
-audioclient_room_name() {
+homophony_room_name() {
   printf '%s' "${ROOM_NAME:-Room}"
 }
 
-audioclient_protocol_name() {
-  printf '%s %s' "$(audioclient_room_name)" "$1"
+homophony_protocol_name() {
+  printf '%s %s' "$(homophony_room_name)" "$1"
 }
 
-audioclient_slug() {
+homophony_slug() {
   local value slug
 
   value="${1:-Room}"
@@ -17,15 +17,15 @@ audioclient_slug() {
   printf '%s' "${slug:-room}"
 }
 
-audioclient_multiroom_name() {
+homophony_multiroom_name() {
   printf '%s' "${MULTIROOM_NAME:-Multiroom}"
 }
 
-audioclient_multiroom_protocol_name() {
-  printf '%s %s' "$(audioclient_multiroom_name)" "$1"
+homophony_multiroom_protocol_name() {
+  printf '%s %s' "$(homophony_multiroom_name)" "$1"
 }
 
-audioclient_snapserver_host() {
+homophony_snapserver_host() {
   if [ "${ENABLE_SNAPSERVER:-0}" = "1" ]; then
     printf '127.0.0.1'
   else
@@ -33,11 +33,11 @@ audioclient_snapserver_host() {
   fi
 }
 
-audioclient_snapclient_id() {
+homophony_snapclient_id() {
   if [ -n "${SNAPCLIENT_HOST_ID:-}" ]; then
     printf '%s' "${SNAPCLIENT_HOST_ID}"
     return
   fi
 
-  printf 'audioclient-%s' "$(audioclient_slug "$(audioclient_protocol_name Snapclient)")"
+  printf 'homophony-%s' "$(homophony_slug "$(homophony_protocol_name Snapclient)")"
 }

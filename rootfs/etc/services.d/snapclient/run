@@ -1,7 +1,7 @@
 #!/command/with-contenv bash
 set -euo pipefail
 
-source /usr/local/lib/audioclient/names.sh
+source /usr/local/lib/homophony/names.sh
 
 if [ "${ENABLE_SNAPCLIENT:-1}" != "1" ]; then
   echo "snapclient disabled"
@@ -20,10 +20,10 @@ if [ -n "${SNAPCLIENT_EXTRA_ARGS:-}" ]; then
   extra_args=( ${SNAPCLIENT_EXTRA_ARGS} )
 fi
 
-SNAPCLIENT_ID="$(audioclient_snapclient_id)"
+SNAPCLIENT_ID="$(homophony_snapclient_id)"
 
 exec snapclient \
-  --host "$(audioclient_snapserver_host)" \
+  --host "$(homophony_snapserver_host)" \
   --hostID "${SNAPCLIENT_ID}" \
   --player "pulse:server=${PULSE_SERVER:-unix:/tmp/pulse/native}" \
   "${extra_args[@]}"

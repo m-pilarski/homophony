@@ -40,13 +40,13 @@ RUN printf '@edgecommunity https://dl-cdn.alpinelinux.org/alpine/edge/community\
 COPY rootfs/ /
 
 RUN set -eux; \
-    chmod +x /etc/cont-init.d/* /etc/services.d/*/run /usr/local/bin/audioclient-healthcheck; \
+    chmod +x /etc/cont-init.d/* /etc/services.d/*/run /usr/local/bin/homophony-healthcheck; \
     spotifyd --help 2>&1 | grep -Eiq 'pulseaudio'; \
     snapclient --help 2>&1 | grep -Eiq 'pulse'; \
     snapserver --version >/dev/null; \
     mpd --version 2>&1 | grep -Eiq '(^| )pulse( |$)'
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=90s --retries=3 \
-  CMD ["/usr/local/bin/audioclient-healthcheck"]
+  CMD ["/usr/local/bin/homophony-healthcheck"]
 
 ENTRYPOINT ["/init"]

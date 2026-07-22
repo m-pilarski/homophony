@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Functional health check for the audioclient container.
+# Functional health check for the homophony container.
 #
 # Exit 0 = healthy, non-zero = unhealthy. Docker's --retries/--start-period
 # debounce boot races and momentary blips; a sustained failure marks the

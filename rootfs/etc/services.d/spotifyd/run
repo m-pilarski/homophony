@@ -1,7 +1,7 @@
 #!/command/with-contenv bash
 set -euo pipefail
 
-source /usr/local/lib/audioclient/names.sh
+source /usr/local/lib/homophony/names.sh
 
 if [ "${ENABLE_SPOTIFY:-1}" != "1" ]; then
   echo "spotifyd disabled"
@@ -15,7 +15,7 @@ until [ -S "${PULSE_SOCKET}" ] && pactl info >/dev/null 2>&1; do
   sleep 1
 done
 
-DEVICE_NAME="$(audioclient_protocol_name Spotify)"
+DEVICE_NAME="$(homophony_protocol_name Spotify)"
 
 mpris_args=()
 if [ "${SPOTIFY_USE_MPRIS:-1}" = "1" ]; then
@@ -46,7 +46,7 @@ exec spotifyd \
   --device "${SPOTIFYD_DEVICE:-audio_output}" \
   --device-name "${DEVICE_NAME}" \
   --device-type speaker \
-  --cache-path /var/lib/audioclient/spotifyd/cache \
+  --cache-path /var/lib/homophony/spotifyd/cache \
   --bitrate "${SPOTIFY_BITRATE:-320}" \
   --audio-format "${SPOTIFY_AUDIO_FORMAT:-s16}" \
   --volume-controller soft-volume \

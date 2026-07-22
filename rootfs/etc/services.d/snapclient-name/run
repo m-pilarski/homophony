@@ -1,16 +1,16 @@
 #!/command/with-contenv bash
 set -euo pipefail
 
-source /usr/local/lib/audioclient/names.sh
+source /usr/local/lib/homophony/names.sh
 
 if [ "${ENABLE_SNAPCLIENT:-1}" != "1" ]; then
   echo "snapclient-name disabled"
   exec sleep infinity
 fi
 
-SNAPCLIENT_ID="$(audioclient_snapclient_id)"
-SNAPCLIENT_NAME="$(audioclient_protocol_name Snapclient)"
-SNAPSERVER_HOST="$(audioclient_snapserver_host)"
+SNAPCLIENT_ID="$(homophony_snapclient_id)"
+SNAPCLIENT_NAME="$(homophony_protocol_name Snapclient)"
+SNAPSERVER_HOST="$(homophony_snapserver_host)"
 SNAPSERVER_CONTROL_PORT="${SNAPSERVER_CONTROL_PORT:-1705}"
 named=0
 

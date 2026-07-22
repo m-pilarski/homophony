@@ -1,10 +1,10 @@
 services:
-  audioclient:
+  homophony:
     build:
       context: .
       dockerfile: Dockerfile
-    # image: local/audioclient:latest
-    container_name: audioclient
+    # image: local/homophony:latest
+    container_name: homophony
     restart: unless-stopped
     network_mode: host
     device_cgroup_rules:
@@ -39,17 +39,17 @@ services:
       - "${AUDIO_GID:-29}"
     volumes:
       - ${AUDIO_DEVICE:-/dev/snd}:/dev/snd
-      - data:/var/lib/audioclient
+      - data:/var/lib/homophony
     labels:
       # Restarted by the autoheal companion when the image HEALTHCHECK
-      # (audioclient-healthcheck) reports unhealthy.
+      # (homophony-healthcheck) reports unhealthy.
       - autoheal=true
 
   # Watches this host's containers and restarts any labelled autoheal=true
   # that Docker marks unhealthy. Docker does not restart on health alone.
   autoheal:
     image: willfarrell/autoheal:latest
-    container_name: audioclient-autoheal
+    container_name: homophony-autoheal
     restart: unless-stopped
     network_mode: none
     environment:

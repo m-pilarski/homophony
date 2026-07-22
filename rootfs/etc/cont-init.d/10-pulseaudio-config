@@ -1,7 +1,7 @@
 #!/command/with-contenv bash
 set -euo pipefail
 
-source /usr/local/lib/audioclient/names.sh
+source /usr/local/lib/homophony/names.sh
 
 PULSE_DIR="${PULSE_RUNTIME_PATH:-/tmp/pulse}"
 RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/runtime-audio}"
@@ -11,8 +11,8 @@ SINK_NAME="audio_output"
 HARDWARE_SINK_NAME="audio_output_hardware"
 SNAPCAST_SINK_NAME="snapcast"
 SNAPSERVER_FIFO="/run/snapserver/snapfifo"
-UPNP_FRIENDLY_NAME="$(audioclient_protocol_name UPnP)"
-MULTIROOM_UPNP_NAME="$(audioclient_multiroom_protocol_name UPnP)"
+UPNP_FRIENDLY_NAME="$(homophony_protocol_name UPnP)"
+MULTIROOM_UPNP_NAME="$(homophony_multiroom_protocol_name UPnP)"
 
 is_truthy() {
   case "${1,,}" in
@@ -71,16 +71,16 @@ mkdir -p "${PULSE_DIR}" \
   "${RUNTIME_DIR}" \
   /run/mpd \
   /run/snapserver \
-  /var/lib/audioclient/mpd/music \
-  /var/lib/audioclient/mpd/playlists \
-  /var/lib/audioclient/mpd-multiroom/music \
-  /var/lib/audioclient/mpd-multiroom/playlists \
-  /var/lib/audioclient/upmpdcli/cache \
-  /var/lib/audioclient/upmpdcli-multiroom/cache \
-  /var/lib/audioclient/spotifyd/cache \
-  /var/lib/audioclient/spotifyd-multiroom/cache \
-  /var/lib/audioclient/snapserver
-touch /var/lib/audioclient/mpd/state /var/lib/audioclient/mpd-multiroom/state
+  /var/lib/homophony/mpd/music \
+  /var/lib/homophony/mpd/playlists \
+  /var/lib/homophony/mpd-multiroom/music \
+  /var/lib/homophony/mpd-multiroom/playlists \
+  /var/lib/homophony/upmpdcli/cache \
+  /var/lib/homophony/upmpdcli-multiroom/cache \
+  /var/lib/homophony/spotifyd/cache \
+  /var/lib/homophony/spotifyd-multiroom/cache \
+  /var/lib/homophony/snapserver
+touch /var/lib/homophony/mpd/state /var/lib/homophony/mpd-multiroom/state
 chmod 700 "${RUNTIME_DIR}"
 
 cat > /etc/pulse/client.conf <<EOF
@@ -118,11 +118,11 @@ if [ -n "${UPNP_DEVICE:-}" ]; then
 fi
 
 cat > /etc/mpd.conf <<EOF
-music_directory "/var/lib/audioclient/mpd/music"
-playlist_directory "/var/lib/audioclient/mpd/playlists"
-db_file "/var/lib/audioclient/mpd/database"
-state_file "/var/lib/audioclient/mpd/state"
-sticker_file "/var/lib/audioclient/mpd/sticker.sql"
+music_directory "/var/lib/homophony/mpd/music"
+playlist_directory "/var/lib/homophony/mpd/playlists"
+db_file "/var/lib/homophony/mpd/database"
+state_file "/var/lib/homophony/mpd/state"
+sticker_file "/var/lib/homophony/mpd/sticker.sql"
 pid_file "/run/mpd/mpd.pid"
 bind_to_address "127.0.0.1"
 port "6600"
@@ -146,14 +146,14 @@ mpdhost = 127.0.0.1
 mpdport = 6600
 mpdtimeoutms = 5000
 ownqueue = 1
-cachedir = /var/lib/audioclient/upmpdcli/cache
+cachedir = /var/lib/homophony/upmpdcli/cache
 pidfile = /run/upmpdcli.pid
 plgmicrohttpport = 49149
 EOF
 
 cat > /etc/snapserver.conf <<EOF
 [server]
-datadir = /var/lib/audioclient/snapserver
+datadir = /var/lib/homophony/snapserver
 
 [tcp]
 enabled = true
@@ -169,11 +169,11 @@ codec = flac
 EOF
 
 cat > /etc/mpd-multiroom.conf <<EOF
-music_directory "/var/lib/audioclient/mpd-multiroom/music"
-playlist_directory "/var/lib/audioclient/mpd-multiroom/playlists"
-db_file "/var/lib/audioclient/mpd-multiroom/database"
-state_file "/var/lib/audioclient/mpd-multiroom/state"
-sticker_file "/var/lib/audioclient/mpd-multiroom/sticker.sql"
+music_directory "/var/lib/homophony/mpd-multiroom/music"
+playlist_directory "/var/lib/homophony/mpd-multiroom/playlists"
+db_file "/var/lib/homophony/mpd-multiroom/database"
+state_file "/var/lib/homophony/mpd-multiroom/state"
+sticker_file "/var/lib/homophony/mpd-multiroom/sticker.sql"
 pid_file "/run/mpd/mpd-multiroom.pid"
 bind_to_address "127.0.0.1"
 port "6601"
@@ -197,7 +197,7 @@ mpdhost = 127.0.0.1
 mpdport = 6601
 mpdtimeoutms = 5000
 ownqueue = 1
-cachedir = /var/lib/audioclient/upmpdcli-multiroom/cache
+cachedir = /var/lib/homophony/upmpdcli-multiroom/cache
 pidfile = /run/upmpdcli-multiroom.pid
 plgmicrohttpport = 49150
 EOF

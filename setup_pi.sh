@@ -193,7 +193,7 @@ fi
 
 desired_service="$(cat <<EOF
 [Unit]
-Description=Update audioclient container image
+Description=Update homophony container image
 Wants=network-online.target
 After=network-online.target docker.service
 Requires=docker.service
@@ -208,7 +208,7 @@ EOF
 
 desired_timer="$(cat <<EOF
 [Unit]
-Description=Nightly audioclient container image update
+Description=Nightly homophony container image update
 
 [Timer]
 OnCalendar=*-*-* ${UPDATE_TIME}:00
@@ -221,12 +221,12 @@ EOF
 )"
 
 units_changed=0
-if [ "$(cat /etc/systemd/system/audioclient-update.service 2>/dev/null)" != "$desired_service" ]; then
-  printf '%s\n' "$desired_service" > /etc/systemd/system/audioclient-update.service
+if [ "$(cat /etc/systemd/system/homophony-update.service 2>/dev/null)" != "$desired_service" ]; then
+  printf '%s\n' "$desired_service" > /etc/systemd/system/homophony-update.service
   units_changed=1
 fi
-if [ "$(cat /etc/systemd/system/audioclient-update.timer 2>/dev/null)" != "$desired_timer" ]; then
-  printf '%s\n' "$desired_timer" > /etc/systemd/system/audioclient-update.timer
+if [ "$(cat /etc/systemd/system/homophony-update.timer 2>/dev/null)" != "$desired_timer" ]; then
+  printf '%s\n' "$desired_timer" > /etc/systemd/system/homophony-update.timer
   units_changed=1
 fi
 
@@ -236,7 +236,7 @@ if [ "$units_changed" = "1" ]; then
 else
   skip "auto-update timer (${UPDATE_TIME})"
 fi
-systemctl enable --now --quiet audioclient-update.timer
+systemctl enable --now --quiet homophony-update.timer
 
 ### Security --------------------------------------------------------------
 
