@@ -7,6 +7,16 @@ services:
     container_name: homophony
     restart: unless-stopped
     network_mode: host
+    # Pin the resolver instead of inheriting whatever the host's
+    # /etc/resolv.conf happened to say when the container was created. At boot
+    # dockerd can start the container before the host has real nameservers, and
+    # with host networking there is no embedded Docker resolver to fall back on,
+    # so the container is left with an empty resolv.conf for its whole lifetime —
+    # snapcast keeps working (SNAPSERVER is an IP) while Spotify and UPnP are
+    # silently dead. Leave DNS_SERVERS unset to keep Docker's default behaviour;
+    # compose then drops this key entirely.
+    dns:
+      - ${DNS_SERVERS:-}
     device_cgroup_rules:
       - "c 116:* rmw"
     environment:
@@ -28,6 +38,8 @@ services:
       ENABLE_AUDIO_PRIORITY: ${ENABLE_AUDIO_PRIORITY:-1}
       AUDIO_PRIORITY_GRACE_SECONDS: ${AUDIO_PRIORITY_GRACE_SECONDS:-10}
       AUDIO_PRIORITY_RESUME_SPOTIFY: ${AUDIO_PRIORITY_RESUME_SPOTIFY:-0}
+      HEALTHCHECK_TOLERANCE_SECONDS: ${HEALTHCHECK_TOLERANCE_SECONDS:-600}
+      HEALTHCHECK_DNS_NAME: ${HEALTHCHECK_DNS_NAME:-}
       SNAPCLIENT_EXTRA_ARGS: ${SNAPCLIENT_EXTRA_ARGS:-}
       SNAPSERVER_EXTRA_ARGS: ${SNAPSERVER_EXTRA_ARGS:-}
       SPOTIFYD_EXTRA_ARGS: ${SPOTIFYD_EXTRA_ARGS:-}
