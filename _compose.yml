@@ -19,6 +19,13 @@ services:
       - ${DNS_SERVERS:-}
     device_cgroup_rules:
       - "c 116:* rmw"
+    # Opt-in GPIO access for the amplifier trigger relay (ENABLE_AMP_TRIGGER=1).
+    # Set AMP_TRIGGER_DEVICE=/dev/gpiochip0:/dev/gpiochip0 on a host that has the
+    # relay wired up; the default maps /dev/null onto itself, which is a harmless
+    # no-op on hosts without one. Going through devices: rather than a bind mount
+    # is what grants the cgroup permission for the chip's dynamic major.
+    devices:
+      - ${AMP_TRIGGER_DEVICE:-/dev/null:/dev/null}
     environment:
       ROOM_NAME: ${ROOM_NAME:-Room}
       MULTIROOM_NAME: ${MULTIROOM_NAME:-Multiroom}
@@ -38,6 +45,13 @@ services:
       ENABLE_AUDIO_PRIORITY: ${ENABLE_AUDIO_PRIORITY:-1}
       AUDIO_PRIORITY_GRACE_SECONDS: ${AUDIO_PRIORITY_GRACE_SECONDS:-10}
       AUDIO_PRIORITY_RESUME_SPOTIFY: ${AUDIO_PRIORITY_RESUME_SPOTIFY:-0}
+      ENABLE_AMP_TRIGGER: ${ENABLE_AMP_TRIGGER:-0}
+      AMP_TRIGGER_CHIP: ${AMP_TRIGGER_CHIP:-gpiochip0}
+      AMP_TRIGGER_GPIO: ${AMP_TRIGGER_GPIO:-17}
+      AMP_TRIGGER_ACTIVE_LOW: ${AMP_TRIGGER_ACTIVE_LOW:-0}
+      AMP_TRIGGER_IDLE_SECONDS: ${AMP_TRIGGER_IDLE_SECONDS:-60}
+      AMP_TRIGGER_INTERVAL: ${AMP_TRIGGER_INTERVAL:-2}
+      AMP_TRIGGER_SINK: ${AMP_TRIGGER_SINK:-audio_output}
       HEALTHCHECK_TOLERANCE_SECONDS: ${HEALTHCHECK_TOLERANCE_SECONDS:-600}
       HEALTHCHECK_DNS_NAME: ${HEALTHCHECK_DNS_NAME:-}
       SNAPCLIENT_EXTRA_ARGS: ${SNAPCLIENT_EXTRA_ARGS:-}

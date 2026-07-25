@@ -42,7 +42,7 @@ docker buildx build --platform linux/arm/v7,linux/arm64 -t local/homophony:lates
 `rootfs/` is copied verbatim to `/` in the image. The s6-overlay layout:
 
 - `rootfs/etc/cont-init.d/10-pulseaudio-config` — one-shot init that **generates all service config at container start** from env vars: `/etc/pulse/{client.conf,daemon.conf,default.pa}`, `/etc/mpd.conf`, `/etc/upmpdcli.conf`, `/etc/snapserver.conf`. To change any service's configuration, edit this script — there are no static config files.
-- `rootfs/etc/services.d/*/run` — one long-running s6 service per process (pulseaudio, snapclient, snapclient-name, snapserver, spotifyd, mpd, upmpdcli, pulse-sink-watch, dbus, audio-priority), plus server-mode clones of the source services (spotifyd-multiroom, mpd-multiroom on 6601, upmpdcli-multiroom, dbus-multiroom) that feed the house stream. Must be executable; the Dockerfile chmods them.
+- `rootfs/etc/services.d/*/run` — one long-running s6 service per process (pulseaudio, snapclient, snapclient-name, snapserver, spotifyd, mpd, upmpdcli, pulse-sink-watch, dbus, audio-priority, amp-trigger), plus server-mode clones of the source services (spotifyd-multiroom, mpd-multiroom on 6601, upmpdcli-multiroom, dbus-multiroom) that feed the house stream. Must be executable; the Dockerfile chmods them.
 - `rootfs/usr/local/lib/homophony/names.sh` — sourced helpers that derive all advertised names (`${ROOM_NAME} Snapclient/Spotify/UPnP`, `${MULTIROOM_NAME} Spotify/UPnP`), the stable snapclient hostID from `ROOM_NAME`, and the snapclient's target host (`homophony_snapserver_host`: `127.0.0.1` when `ENABLE_SNAPSERVER=1`, else `$SNAPSERVER`).
 
 ### Audio flow
@@ -60,6 +60,18 @@ The UPnP path is indirect: upmpdcli controls a local MPD (127.0.0.1:6600) whose 
 Server mode (`ENABLE_SNAPSERVER=1`, one device per house): snapserver runs in the same container, fed by a `module-pipe-sink` named `snapcast` → FIFO `/run/snapserver/snapfifo` → snapserver `pipe://` source (s16le/48000/2ch on both ends — keep them matched). The local snapclient and snapclient-name then connect to `127.0.0.1`, ignoring `SNAPSERVER`; server state persists in `/var/lib/homophony/snapserver`. The device stays a full room (local endpoints unchanged) and additionally advertises `${MULTIROOM_NAME} Spotify/UPnP` via the `*-multiroom` service clones, which are hard-routed into the `snapcast` sink and tag their pulse streams with `homophony.domain=multiroom`. `pulse-sink-watch` deliberately never moves streams off the `snapcast` sink back to `audio_output`, and `audio-priority` arbitrates by domain (see above) so multiroom playback never mutes the local snapclient that plays it.
 
 `audio-priority` enforces the source hierarchy UPnP > Spotify > Snapcast (`ENABLE_AUDIO_PRIORITY`, grace period `AUDIO_PRIORITY_GRACE_SECONDS`): it polls MPD's state for UPnP activity, detects Spotify by the `application.process.binary` property on sink-inputs (`pactl --format=json`), pauses spotifyd via MPRIS over a private session DBus (the `dbus` service; spotifyd runs with `--use-mpris`), and mutes — never pauses — the local snapclient sink-input so other Snapcast rooms keep playing. It arbitrates two independent domains: the room endpoints (mpd on 6600, untagged spotifyd streams; domain from `UPNP_DEVICE`/`SPOTIFYD_DEVICE` env, local by default) and, in server mode, the multiroom endpoints (mpd-multiroom on 6601, spotifyd streams tagged `homophony.domain=multiroom` via `PULSE_PROP`, MPRIS on the second bus `DBUS_MULTIROOM_BUS_ADDRESS`). UPnP pauses Spotify within a domain, and only local-domain sources mute the local snapclient.
+
+### Amplifier trigger (optional)
+
+`amp-trigger` drives a GPIO line that switches a 12V trigger relay, so an external amp only powers up while the room is playing. Off unless `ENABLE_AMP_TRIGGER=1`, since it needs hardware wired to the pin. Level `1` always means "amp on" — `AMP_TRIGGER_ACTIVE_LOW=1` inverts the pin for relay boards that close on a low input, so nothing else in the script depends on board polarity.
+
+Three things about it are easy to get wrong:
+
+- **Playback is read from the sink state**, not from sink-inputs: PulseAudio holds a sink `RUNNING` only while it has an uncorked stream. It must be the sink clients play into (`AMP_TRIGGER_SINK`, default `audio_output`) — with `DOWNMIX_TO_MONO=1` that is the mono remap, while `audio_output_hardware` underneath stays `RUNNING` permanently and would pin the amp on forever.
+- **A GPIO line is only held while a process holds it**, and on release the pin keeps its last driven value rather than reverting (verified on pinctrl-bcm2835). So one long-lived `gpioset` child holds the level, switching level means killing that child before starting the replacement, and the exit trap drives the line low *before* releasing it. Hardware that reverts to input instead also ends up off, since the relay needs an asserted pin to close.
+- **Hysteresis is one-sided**: the pin goes high on the first poll that sees playback and only drops after a full `AMP_TRIGGER_IDLE_SECONDS` window with none, so gaps between tracks never cycle the relay.
+
+GPIO access is opt-in through compose: `AMP_TRIGGER_DEVICE=/dev/gpiochip0:/dev/gpiochip0` under `devices:` (which also grants the cgroup permission for the chip's dynamic major), defaulting to a no-op `/dev/null:/dev/null` mapping so hosts without a relay are unaffected. Wired hosts so far: `.201`.
 
 ### Service script conventions
 

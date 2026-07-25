@@ -1,0 +1,138 @@
+#!/command/with-contenv bash
+# Drives a GPIO line that switches a 12V trigger relay, so an external amplifier
+# only powers up while this room is actually playing something.
+set -euo pipefail
+
+if [ "${ENABLE_AMP_TRIGGER:-0}" != "1" ]; then
+  echo "amp-trigger disabled"
+  exec sleep infinity
+fi
+
+PULSE_SOCKET="${PULSE_RUNTIME_PATH:-/tmp/pulse}/native"
+SINK="${AMP_TRIGGER_SINK:-audio_output}"
+LINE="${AMP_TRIGGER_GPIO:-17}"
+IDLE="${AMP_TRIGGER_IDLE_SECONDS:-60}"
+INTERVAL="${AMP_TRIGGER_INTERVAL:-2}"
+CONSUMER=homophony-amp-trigger
+
+# Accept a chip name, number or path.
+CHIP="${AMP_TRIGGER_CHIP:-gpiochip0}"
+case "${CHIP}" in
+  /*) ;;
+  *) CHIP="/dev/${CHIP}" ;;
+esac
+
+# Level 1 always means "amp on". With an active-high relay board that is a high
+# pin; --active-low inverts the pin for boards that close on a low input, so the
+# rest of this script never has to care which kind is wired up.
+polarity=()
+if [ "${AMP_TRIGGER_ACTIVE_LOW:-0}" = "1" ]; then
+  polarity=( --active-low )
+fi
+
+# gpioset owns the line only while it runs, and once it exits the pin keeps
+# whatever it was last driven to instead of reverting — so one long-lived gpioset
+# holds the level we want and the exit trap drives the line low before handing it
+# back. Only one process may hold a line at a time, which is why switching level
+# means dropping the old holder first; the pin latches across that gap.
+holder=""
+level=""
+
+release() {
+  [ -n "${holder}" ] || return 0
+  kill "${holder}" 2>/dev/null || true
+  wait "${holder}" 2>/dev/null || true
+  holder=""
+}
+
+drive() {
+  local want="$1"
+
+  release
+  gpioset --chip "${CHIP}" --consumer "${CONSUMER}" "${polarity[@]}" "${LINE}=${want}" &
+  holder=$!
+
+  # gpioset exits immediately when the line is busy or the chip is wrong, so a
+  # child that is still alive is the confirmation that the level really took.
+  sleep 0.3
+  if ! kill -0 "${holder}" 2>/dev/null; then
+    wait "${holder}" 2>/dev/null || true
+    holder=""
+    return 1
+  fi
+
+  level="${want}"
+}
+
+# Leave the amp off on the way out. Driving low before releasing covers hardware
+# that latches the last output value; hardware that instead reverts the line to
+# an input also ends up off, since the relay needs an asserted pin to close.
+shutdown() {
+  trap - TERM INT
+  drive 0 >/dev/null 2>&1 || true
+  release
+  echo "amp-trigger stopped: amp off"
+  exit 0
+}
+trap shutdown TERM INT
+
+until [ -S "${PULSE_SOCKET}" ] && pactl info >/dev/null 2>&1; do
+  echo "Waiting for PulseAudio..."
+  sleep 1
+done
+
+until [ -c "${CHIP}" ]; do
+  echo "Waiting for GPIO chip ${CHIP}..."
+  sleep 2
+done
+
+# PulseAudio holds a sink RUNNING only while it has an uncorked stream, which
+# makes the sink state the playback signal. It has to be the sink clients play
+# into: with DOWNMIX_TO_MONO=1 that is the mono remap named audio_output, while
+# the underlying audio_output_hardware sink stays RUNNING permanently and would
+# pin the amp on forever.
+playing() {
+  pactl --format=json list sinks 2>/dev/null \
+    | jq -e --arg sink "${SINK}" 'any(.[]; .name == $sink and .state == "RUNNING")' >/dev/null 2>&1
+}
+
+echo "amp-trigger active: ${CHIP} line ${LINE} follows sink ${SINK}, amp off after ${IDLE}s idle"
+
+if ! drive 0; then
+  echo "Could not drive ${CHIP} line ${LINE} — is the chip mapped into the container and the line free?"
+  sleep 5
+  exit 1
+fi
+
+last_play=0
+
+while true; do
+  now="$(date +%s)"
+  if playing; then
+    last_play="${now}"
+  fi
+
+  # Immediate on, delayed off: the level only drops once a full idle window has
+  # passed with no playback, so gaps between tracks never cycle the relay.
+  want=0
+  if (( now - last_play < IDLE )); then
+    want=1
+  fi
+
+  if [ "${want}" != "${level}" ]; then
+    if drive "${want}"; then
+      if [ "${want}" = "1" ]; then
+        echo "Amp on (playback on ${SINK})"
+      else
+        echo "Amp off (idle ${IDLE}s)"
+      fi
+    else
+      echo "Could not drive ${CHIP} line ${LINE} to ${want}"
+    fi
+  fi
+
+  # Backgrounded so a TERM lands on the trap straight away instead of waiting
+  # out the poll interval.
+  sleep "${INTERVAL}" &
+  wait "$!" 2>/dev/null || true
+done

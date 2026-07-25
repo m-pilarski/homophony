@@ -40,6 +40,7 @@ Important settings:
 - `ENABLE_AUDIO_PRIORITY`: set to `0` to allow all sources to play simultaneously (see below).
 - `AUDIO_PRIORITY_GRACE_SECONDS`: how long a higher-priority source stays "active" after it stops playing (default `10`).
 - `AUDIO_PRIORITY_RESUME_SPOTIFY`: set to `1` to automatically resume Spotify after the UPnP grace period, if it was paused by the priority service.
+- `ENABLE_AMP_TRIGGER`: set to `1` to switch a 12V amplifier trigger relay from a GPIO pin (see below).
 
 The visible endpoint names are generated from `ROOM_NAME`: `${ROOM_NAME} Snapclient`, `${ROOM_NAME} UPnP`, and `${ROOM_NAME} Spotify`.
 
@@ -135,6 +136,25 @@ By default only one source is audible at a time, with the hierarchy UPnP > Spoti
 - A source must be silent for `AUDIO_PRIORITY_GRACE_SECONDS` (default 10) before lower-priority sources are allowed again, so short gaps between tracks don't let the lower source blare in.
 
 Spotify is not auto-resumed after UPnP ends unless `AUDIO_PRIORITY_RESUME_SPOTIFY=1`; by default it just becomes startable again. Set `ENABLE_AUDIO_PRIORITY=0` to disable arbitration entirely.
+
+## Amplifier Trigger
+
+Optional: switch an external amplifier's 12V trigger from a GPIO pin, so it only powers up while the room is playing. Wire a relay module to the pin (GPIO17 by default, BCM numbering) and put its contacts in the amp's trigger line, then enable it in `.env`:
+
+```bash
+ENABLE_AMP_TRIGGER=1
+AMP_TRIGGER_DEVICE=/dev/gpiochip0:/dev/gpiochip0   # required: hands the GPIO chip to the container
+```
+
+The pin goes high the moment playback starts and drops only after `AMP_TRIGGER_IDLE_SECONDS` (default 60) of continuous silence, so gaps between tracks never cycle the relay. It starts low, and it is driven low again on shutdown so stopping the container never leaves the amp powered.
+
+- `AMP_TRIGGER_GPIO`: line to drive, BCM numbering (default `17`).
+- `AMP_TRIGGER_CHIP`: GPIO chip (default `gpiochip0`).
+- `AMP_TRIGGER_ACTIVE_LOW`: set to `1` for a relay board that closes on a low input.
+- `AMP_TRIGGER_IDLE_SECONDS`: silence required before switching off (default `60`).
+- `AMP_TRIGGER_SINK`: sink whose playback state is followed (default `audio_output`).
+
+Check what it is doing with `docker logs homophony | grep amp-trigger` and, on the host, `gpioinfo -c gpiochip0 17` — while the service is running the line shows `consumer="homophony-amp-trigger"`.
 
 ## Troubleshooting
 

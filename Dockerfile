@@ -19,6 +19,15 @@ ENV AUDIO_PRIORITY_GRACE_SECONDS=10
 ENV AUDIO_PRIORITY_RESUME_SPOTIFY=0
 ENV DBUS_SESSION_BUS_ADDRESS=unix:path=/run/dbus/session_bus_socket
 ENV DBUS_MULTIROOM_BUS_ADDRESS=unix:path=/run/dbus/session_bus_socket_multiroom
+# 12V amplifier trigger relay on a GPIO line. Off by default: it needs a relay
+# wired to the pin and the host's gpiochip mapped into the container.
+ENV ENABLE_AMP_TRIGGER=0
+ENV AMP_TRIGGER_CHIP=gpiochip0
+ENV AMP_TRIGGER_GPIO=17
+ENV AMP_TRIGGER_ACTIVE_LOW=0
+ENV AMP_TRIGGER_IDLE_SECONDS=60
+ENV AMP_TRIGGER_INTERVAL=2
+ENV AMP_TRIGGER_SINK=audio_output
 
 RUN printf '@edgecommunity https://dl-cdn.alpinelinux.org/alpine/edge/community\n' >> /etc/apk/repositories \
   && apk add --no-cache \
@@ -28,6 +37,7 @@ RUN printf '@edgecommunity https://dl-cdn.alpinelinux.org/alpine/edge/community\
     ca-certificates \
     dbus \
     jq \
+    libgpiod \
     mpd \
     pulseaudio \
     pulseaudio-utils \
@@ -44,7 +54,8 @@ RUN set -eux; \
     spotifyd --help 2>&1 | grep -Eiq 'pulseaudio'; \
     snapclient --help 2>&1 | grep -Eiq 'pulse'; \
     snapserver --version >/dev/null; \
-    mpd --version 2>&1 | grep -Eiq '(^| )pulse( |$)'
+    mpd --version 2>&1 | grep -Eiq '(^| )pulse( |$)'; \
+    gpioset --version >/dev/null
 
 # A healthy run takes well under a second. The timeout only has to cover the
 # worst case where several probes each sit out their own timeout (~20s total) —

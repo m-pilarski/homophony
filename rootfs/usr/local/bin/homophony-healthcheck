@@ -125,6 +125,15 @@ resolver_configured() {
   grep -qE '^[[:space:]]*nameserver[[:space:]]+[^[:space:]]' /etc/resolv.conf 2>/dev/null
 }
 
+# amp-trigger holds its GPIO line continuously, at 0 or 1, so losing the hold
+# means the relay is floating rather than being deliberately off.
+line_held() {
+  (
+    exec 2>/dev/null
+    timeout 3 gpioinfo --chip "$1" "$2" | grep -q 'consumer="homophony-amp-trigger"'
+  )
+}
+
 resolves() {
   ( exec 2>/dev/null; timeout 3 getent hosts "$1" >/dev/null )
 }
@@ -210,6 +219,16 @@ if on "${ENABLE_SPOTIFY:-1}"; then
       dbus_ok "${DBUS_MULTIROOM_BUS_ADDRESS:-}" || problems+=("dbus-multiroom bus missing")
     fi
   fi
+fi
+
+# Amplifier trigger relay — the service, plus its GPIO line still being held.
+# The hold is soft because switching level drops it for a fraction of a second.
+if on "${ENABLE_AMP_TRIGGER:-0}"; then
+  svc_up amp-trigger || problems+=("amp-trigger down")
+  amp_chip="${AMP_TRIGGER_CHIP:-gpiochip0}"
+  amp_line="${AMP_TRIGGER_GPIO:-17}"
+  soft_check amp-trigger-line "amp-trigger not holding ${amp_chip} line ${amp_line}" \
+    line_held "${amp_chip}" "${amp_line}"
 fi
 
 # UPnP renderer — mpd answers its control port, upmpdcli holds its http port.
