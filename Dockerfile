@@ -46,7 +46,11 @@ RUN set -eux; \
     snapserver --version >/dev/null; \
     mpd --version 2>&1 | grep -Eiq '(^| )pulse( |$)'
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=90s --retries=3 \
+# A healthy run takes well under a second. The timeout only has to cover the
+# worst case where several probes each sit out their own timeout (~20s total) —
+# if Docker cut the check short instead, that would count as a failure and
+# bypass the script's tolerance windows for self-healing transients.
+HEALTHCHECK --interval=30s --timeout=25s --start-period=90s --retries=3 \
   CMD ["/usr/local/bin/homophony-healthcheck"]
 
 ENTRYPOINT ["/init"]

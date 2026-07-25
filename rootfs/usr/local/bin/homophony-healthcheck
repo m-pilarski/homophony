@@ -5,51 +5,197 @@
 # debounce boot races and momentary blips; a sustained failure marks the
 # container unhealthy and autoheal restarts it.
 #
-# Only failures a container restart can actually clear are fatal here. Two
-# self-healing transients are deliberately NOT checked, because failing on them
-# would restart-storm the container instead of letting the existing recovery
-# loops work:
-#   - a missing audio_output sink (USB DAC reconnecting; pulse-sink-watch
-#     rebuilds the sink chain on its own)
-#   - snapclient not being connected to the server (server rebooting; snapclient
-#     retries the connection indefinitely)
+# Checks come in two flavours:
+#
+#   hard — broken now, and a restart clears it. Reported immediately.
+#   soft — things that have their own recovery loop (pulse-sink-watch rebuilding
+#          the sink chain for a USB DAC that re-enumerated, snapclient retrying a
+#          server that is rebooting). Reported only once they have been failing
+#          continuously for HEALTHCHECK_TOLERANCE_SECONDS, so a transient does
+#          not restart-storm the container while a permanent wedge still
+#          surfaces. Soft state lives in /run, so each restart starts the windows
+#          fresh and the check that triggered a restart cannot instantly re-trip.
+#
+# Probing a port must not cost that port a connection it will log. Snapserver's
+# stream port and upmpdcli's http port are read out of /proc/net/tcp instead of
+# being connected to, and snapserver is exercised with a real JSON-RPC round trip
+# on its control port — a bare connect to the stream port registers as a client
+# session and logs an error on every interval.
 set -uo pipefail
+
+STATE_DIR=/run/homophony/health
+TOLERANCE="${HEALTHCHECK_TOLERANCE_SECONDS:-600}"
+
+problems=()   # fatal now
+watching=()   # soft checks failing, still inside their tolerance window
+now="$(date +%s)"
+
+# If /run is not writable the soft checks can never accumulate history and so
+# never fire, which is the safe direction to fail.
+mkdir -p "${STATE_DIR}" 2>/dev/null || true
 
 on() { [ "${1:-0}" = "1" ]; }
 
-problems=()
+# soft_check <state-key> <message> <command...>
+soft_check() {
+  local key="$1" message="$2" stamp first held
+  shift 2
+  stamp="${STATE_DIR}/${key}"
+
+  if "$@"; then
+    rm -f "${stamp}" 2>/dev/null
+    return
+  fi
+
+  first="$(cat "${stamp}" 2>/dev/null)"
+  case "${first}" in
+    '' | *[!0-9]*)
+      first="${now}"
+      printf '%s\n' "${now}" >"${stamp}" 2>/dev/null || true
+      ;;
+  esac
+
+  held=$(( now - first ))
+  if [ "${held}" -ge "${TOLERANCE}" ]; then
+    problems+=("${message} for ${held}s")
+  else
+    watching+=("${message} for ${held}s")
+  fi
+}
 
 svc_up() {
   [ "$(s6-svstat -o up "/run/service/$1" 2>/dev/null)" = "true" ]
 }
 
-tcp_open() {
-  timeout 3 bash -c "exec 3<>/dev/tcp/127.0.0.1/$1" 2>/dev/null
+# Socket states straight out of the kernel, so no port pays for being checked.
+# Addresses and ports in /proc/net/tcp are hex; the state column is 0A for
+# LISTEN and 01 for ESTABLISHED.
+tcp_state() {
+  local field="$1" state="$2" port
+  port="$(printf '%04X' "$3" 2>/dev/null)" || return 1
+  cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | awk -v f="${field}" -v st="${state}" -v p="${port}" '
+    { n = split($f, a, ":"); if (a[n] == p && $4 == st) found = 1 }
+    END { exit !found }
+  '
 }
 
-mpd_ok() {
-  local line
-  line="$(timeout 3 bash -c "exec 3<>/dev/tcp/127.0.0.1/$1 && head -n1 <&3" 2>/dev/null)" || return 1
-  [[ "$line" == OK\ MPD* ]]
-}
+listening() { tcp_state 2 0A "$1"; }
+
+# An established socket whose *remote* port is $1 — i.e. one we opened outwards,
+# never an inbound session on a port we serve.
+connected_to() { tcp_state 3 01 "$1"; }
 
 dbus_ok() {
   [ -S "${1#unix:path=}" ]
 }
 
-# PulseAudio — the shared mixer everything feeds; always required.
-timeout 5 pactl info >/dev/null 2>&1 || problems+=("pulseaudio unresponsive")
+# Every probe below runs under `timeout`, and bash reports a child it reaps after
+# a signal as "Terminated" on its own stderr — which Docker would fold into the
+# health output. Closing off stderr inside a subshell first keeps the output to
+# the curated message. Budget the timeouts too: their sum has to stay inside the
+# HEALTHCHECK --timeout, or a pathological run gets cut short and recorded as a
+# failure without the soft-check tolerance ever being consulted.
+pulse_ok() {
+  ( exec 2>/dev/null; timeout 5 pactl info >/dev/null )
+}
 
-# Snapcast client — process liveness only; connection state is a transient.
-if on "${ENABLE_SNAPCLIENT:-1}"; then
-  svc_up snapclient || problems+=("snapclient down")
+sink_exists() {
+  (
+    exec 2>/dev/null
+    timeout 3 pactl list short sinks | awk -v n="$1" '$2 == n { found = 1 } END { exit !found }'
+  )
+}
+
+mpd_ok() {
+  local line
+  line="$( ( exec 2>/dev/null; timeout 3 bash -c "exec 3<>/dev/tcp/127.0.0.1/$1 && head -n1 <&3" ) )" \
+    || return 1
+  [[ "$line" == OK\ MPD* ]]
+}
+
+snapserver_rpc_ok() {
+  (
+    exec 2>/dev/null
+    printf '{"id":"healthcheck","jsonrpc":"2.0","method":"Server.GetRPCVersion"}\n' \
+      | timeout 3 nc 127.0.0.1 "$1" | jq -e '.result.major' >/dev/null
+  )
+}
+
+resolver_configured() {
+  grep -qE '^[[:space:]]*nameserver[[:space:]]+[^[:space:]]' /etc/resolv.conf 2>/dev/null
+}
+
+resolves() {
+  ( exec 2>/dev/null; timeout 3 getent hosts "$1" >/dev/null )
+}
+
+# Value of an option inside an *_EXTRA_ARGS string, so ports moved there (the
+# documented way to run a smoke-test stack alongside the real one) are still the
+# ports we probe.
+arg_value() {
+  local wanted="$1" fallback="$2" args i
+  shift 2
+  args=( $* )
+  for (( i = 0; i < ${#args[@]}; i++ )); do
+    case "${args[i]}" in
+      "${wanted}") printf '%s\n' "${args[$(( i + 1 ))]:-${fallback}}"; return ;;
+      "${wanted}="*) printf '%s\n' "${args[i]#*=}"; return ;;
+    esac
+  done
+  printf '%s\n' "${fallback}"
+}
+
+# PulseAudio — the shared mixer everything feeds; always required.
+pulse_ok || problems+=("pulseaudio unresponsive")
+
+# The audio_output sink. Missing while a USB DAC re-enumerates, which
+# pulse-sink-watch repairs; missing forever once the device is gone for good.
+# ALSA_SINK=auto has no fixed sink by design, so there is nothing to look for.
+if [ "${ALSA_SINK:-default}" != "auto" ]; then
+  soft_check audio-sink "no audio_output sink" sink_exists audio_output
 fi
 
-# Snapcast server — the whole house depends on its ports being up.
+# Hostname resolution. A resolv.conf with no nameserver is what a container that
+# started before the host's DNS was configured is left holding: it never repairs
+# itself, a restart does fix it, and every service that needs a hostname is dead
+# meanwhile — while snapcast keeps working if SNAPSERVER is an IP, which is what
+# makes it so easy to miss. A resolver that is configured but stops answering is
+# soft: a restart rarely helps, but a stale nameserver address is worth raising
+# once it is plainly not a blip.
+if ! resolver_configured; then
+  problems+=("no nameserver in /etc/resolv.conf")
+else
+  # Only worth a live query once a nameserver exists: musl falls back to
+  # 127.0.0.1 when resolv.conf lists none, so the lookup would just burn its
+  # whole timeout confirming what the check above already said.
+  dns_name="${HEALTHCHECK_DNS_NAME:-}"
+  if [ -z "${dns_name}" ] && on "${ENABLE_SPOTIFY:-1}"; then
+    dns_name=apresolve.spotify.com
+  fi
+  if [ -n "${dns_name}" ] && [ "${dns_name}" != "none" ]; then
+    soft_check dns "cannot resolve ${dns_name}" resolves "${dns_name}"
+  fi
+fi
+
+# Snapcast client — the process, and that it actually holds a connection to the
+# server rather than merely being alive.
+if on "${ENABLE_SNAPCLIENT:-1}"; then
+  svc_up snapclient || problems+=("snapclient down")
+  snapclient_port="$(arg_value --port 1704 "${SNAPCLIENT_EXTRA_ARGS:-}")"
+  soft_check snapclient-connection \
+    "snapclient not connected on ${snapclient_port}" connected_to "${snapclient_port}"
+fi
+
+# Snapcast server — the whole house depends on it.
 if on "${ENABLE_SNAPSERVER:-0}"; then
-  for p in 1704 1705 1780; do
-    tcp_open "$p" || problems+=("snapserver port $p not listening")
-  done
+  control_port="${SNAPSERVER_CONTROL_PORT:-1705}"
+  stream_port="$(arg_value --stream.port 1704 "${SNAPSERVER_EXTRA_ARGS:-}")"
+  http_port="$(arg_value --http.port 1780 "${SNAPSERVER_EXTRA_ARGS:-}")"
+
+  snapserver_rpc_ok "${control_port}" \
+    || problems+=("snapserver not answering JSON-RPC on ${control_port}")
+  listening "${stream_port}" || problems+=("snapserver stream port ${stream_port} not listening")
+  listening "${http_port}" || problems+=("snapserver http port ${http_port} not listening")
 fi
 
 # Spotify Connect — process liveness plus, with MPRIS, its control bus.
@@ -69,16 +215,21 @@ fi
 # UPnP renderer — mpd answers its control port, upmpdcli holds its http port.
 if on "${ENABLE_UPNP:-1}"; then
   mpd_ok 6600 || problems+=("mpd not responding on 6600")
-  tcp_open 49149 || problems+=("upmpdcli not listening on 49149")
+  listening 49149 || problems+=("upmpdcli not listening on 49149")
   if on "${ENABLE_SNAPSERVER:-0}"; then
     mpd_ok 6601 || problems+=("mpd-multiroom not responding on 6601")
-    tcp_open 49150 || problems+=("upmpdcli-multiroom not listening on 49150")
+    listening 49150 || problems+=("upmpdcli-multiroom not listening on 49150")
   fi
 fi
 
 if [ "${#problems[@]}" -gt 0 ]; then
   printf 'unhealthy: %s\n' "$(IFS=';'; echo "${problems[*]}")"
   exit 1
+fi
+
+if [ "${#watching[@]}" -gt 0 ]; then
+  printf 'healthy (watching: %s)\n' "$(IFS=';'; echo "${watching[*]}")"
+  exit 0
 fi
 
 echo "healthy"

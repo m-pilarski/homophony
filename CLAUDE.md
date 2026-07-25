@@ -71,7 +71,18 @@ Server mode (`ENABLE_SNAPSERVER=1`, one device per house): snapserver runs in th
 
 ### Health check
 
-`rootfs/usr/local/bin/homophony-healthcheck` is the image `HEALTHCHECK` (30s interval, 90s start-period, 3 retries). It probes each **enabled** service functionally, gated on the same `ENABLE_*` env the run scripts use: `pactl info` for pulseaudio; s6 `up` for snapclient/spotifyd(-multiroom); the MPD greeting on 6600/6601; a TCP connect to snapserver's 1704/1705/1780 and upmpdcli's http 49149/49150; the DBus session-socket(s) when MPRIS is on. It deliberately does **not** fail on self-healing transients — a missing `audio_output` sink (DAC reconnecting, handled by `pulse-sink-watch`) or snapclient not being connected (server rebooting) — since those would restart-storm rather than recover. The compose files add an `autoheal=true` label plus a `willfarrell/autoheal` companion container (Docker does not restart on health alone); keep both compose files in sync.
+`rootfs/usr/local/bin/homophony-healthcheck` is the image `HEALTHCHECK` (30s interval, 25s timeout, 90s start-period, 3 retries). It probes each **enabled** service functionally, gated on the same `ENABLE_*` env the run scripts use.
+
+Checks are either **hard** (broken now, and a restart clears it — reported immediately) or **soft** (things with their own recovery loop — reported only after failing continuously for `HEALTHCHECK_TOLERANCE_SECONDS`, default 600). Soft state is one file per check under `/run/homophony/health`, so a restart starts every window fresh and the failure that caused a restart cannot instantly re-trip it. A healthy run with a soft check mid-window prints `healthy (watching: …)`.
+
+- hard: `pactl info`; a `nameserver` line in `/etc/resolv.conf`; s6 `up` for snapclient/spotifyd(-multiroom); the MPD greeting on 6600/6601; the DBus session-socket(s) when MPRIS is on; in server mode a real `Server.GetRPCVersion` JSON-RPC round trip on the control port.
+- soft: the `audio_output` sink existing (skipped when `ALSA_SINK=auto`, which has no fixed sink); snapclient holding an established connection to its stream port; resolving `HEALTHCHECK_DNS_NAME` (defaults to a Spotify endpoint when Spotify is on, `none` skips it).
+
+Two rules worth preserving when editing it. **Never probe a port by connecting to it** unless the connection is a real protocol exchange: a bare connect to snapserver's stream port registers as a client session and logs an error every interval, so LISTEN state is read out of `/proc/net/tcp` instead (snapserver's stream/http ports, upmpdcli's 49149/49150). And **keep the probe timeouts summing to less than the `HEALTHCHECK` timeout** — if Docker cuts the check short that counts as a failure and bypasses the tolerance windows entirely.
+
+An empty `/etc/resolv.conf` is a hard failure because it is exactly what a container that started before the host's DNS was configured is left holding — it never repairs itself, a restart does fix it, and meanwhile snapcast keeps working (`SNAPSERVER` is usually an IP) while Spotify and UPnP are dead, which makes it very easy to miss.
+
+The compose files add an `autoheal=true` label plus a `willfarrell/autoheal` companion container (Docker does not restart on health alone); keep both compose files in sync.
 
 ### Runtime constraints
 
