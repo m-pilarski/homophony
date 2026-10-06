@@ -1,0 +1,13 @@
+[Unit]
+Description=Poll for a WiFi interface that died for good
+
+[Timer]
+# Late enough that a cold boot has had time to associate and get a lease, so a
+# normal startup never counts as a fault.
+OnBootSec=4min
+OnUnitActiveSec=1min
+AccuracySec=10s
+Unit=homophony-wifi-watchdog.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,13 @@
+[Unit]
+Description=Recover a Broadcom SDIO WiFi interface that died for good
+Documentation=https://github.com/m-pilarski/homophony
+# Reloading the driver and re-associating both go through NetworkManager.
+Wants=NetworkManager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/homophony-wifi-watchdog
+# Reloads kernel modules and reboots the host as its last resort.
+User=root
+# Longer than the script's own sleeps around the module reload.
+TimeoutStartSec=120

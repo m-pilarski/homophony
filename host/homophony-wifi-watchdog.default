@@ -1,0 +1,32 @@
+# Config for homophony-wifi-watchdog. Installed to
+# /etc/default/homophony-wifi-watchdog; every value is optional.
+
+#IFACE=wlan0
+
+# Ticks (the timer runs once a minute) before each escalation: reload the
+# driver, then clear any BSSID pin, then reboot. Detection is intentionally slow
+# to trust -- every action here costs the link.
+#RELOAD_AFTER=3
+#UNPIN_AFTER=6
+#REBOOT_AFTER=9
+
+# Unload order. The holder must come first; loading walks the list in reverse.
+# brcmfmac_cyw holds brcmfmac on the current Pi kernels.
+#MODULES="brcmfmac_cyw brcmfmac"
+
+# Host to ping to prove the link carries traffic. Defaults to the default
+# gateway on IFACE.
+#PING_TARGET=192.168.178.1
+
+# Set to 0 to make the watchdog reload and unpin but never reboot the host.
+#ALLOW_REBOOT=1
+
+# Minimum spacing, plus a hard ceiling over a rolling window. The window is
+# what bounds an intermittent fault: any counter that resets on recovery cannot.
+# Set REBOOT_MAX_PER_WINDOW=0 to stop it rebooting at all.
+#REBOOT_MIN_INTERVAL=1800
+#REBOOT_MAX_PER_WINDOW=3
+#REBOOT_WINDOW=86400
+
+# Log what it would do, change nothing.
+#DRY_RUN=0

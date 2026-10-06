@@ -141,6 +141,51 @@ reported as its own soft condition (`ALSA card X absent from the host`) rather t
 inside the container is the container's own procfs and never lists the host's cards — the card list
 has to come through `/dev/snd`, which is what `aplay -l` reads.
 
+### Host-side WiFi watchdog (Raspberry Pi endpoints)
+
+The dominant outage on the Pi endpoints is **not audio, it is WiFi**. The Broadcom SDIO firmware
+traps and the driver halts for good:
+
+```
+brcmfmac: brcmf_sdio_hostmail: unexpected NAKHANDLED!
+brcmfmac: brcmf_sdio_dpc: failed backplane access over SDIO, halting operation
+brcmfmac: brcmf_sdio_checkdied: firmware trap in dongle
+NetworkManager: device (wlan0): state change: activated -> unmanaged
+                (reason 'unmanaged-link-not-init', managed-type: 'removed')
+```
+
+`wlan0` is **removed**, not disconnected, and nothing re-creates it. The host keeps running with no
+network until someone reboots — observed at nearly three days on Schlafzimmer (2026-10-06). Both
+observed traps landed in the same second as a roam between the router's radio
+(`34:E1:A9:65:8A:58`) and the repeater at `.2` (`00:7A:A4:D5:80:71`).
+
+`homophony-wifi-watchdog` is a systemd timer (once a minute) that checks four things, cheapest
+first — the interface exists in `/sys`, NetworkManager calls it `connected`, a default route exists,
+and the gateway answers a ping — and escalates **once per threshold**, never every tick:
+
+1. `RELOAD_AFTER` — reload the brcmfmac modules, which re-creates the interface.
+2. `UNPIN_AFTER` — clear any BSSID pin, in case the pinned AP is simply gone.
+3. `REBOOT_AFTER` — reboot, under the same two-tier guard as the DAC watchdog
+   (`REBOOT_MIN_INTERVAL` plus the rolling `REBOOT_MAX_PER_WINDOW`).
+
+Two things to keep in mind when editing it:
+
+- **Unload order matters.** `brcmfmac_cyw` holds `brcmfmac` on current Pi kernels, so the holder
+  comes out first and loading walks the list in reverse. `MODULES` encodes that order.
+- **`iw` and `wpa_cli` are not installed** on these hosts, and `modprobe` is not on a login shell's
+  PATH. Detection goes through `nmcli` and `/sys/class/net`, and the script sets its own PATH.
+
+`pin-wifi-bssid.sh` pins `wlan0` to one BSSID so the roam that triggers the trap stops happening;
+both APs share one SSID *and* channel 11, and the Pis are stationary, so roaming buys nothing. It
+re-associates via `systemd-run` rather than inline, because over SSH the link drop would otherwise
+kill `nmcli` halfway. **The pin depends on the watchdog being installed**: step 2 above is what stops
+a hard pin stranding a headless box if the pinned AP ever disappears. Do not pin a host that has no
+watchdog.
+
+NetworkManager owns the config on these hosts even though `/etc/netplan/90-NM-*.yaml` exists — the
+`netplan` CLI is not installed and NM *writes* those files, so `nmcli` is the source of truth and
+does persist.
+
 ### Runtime constraints
 
 The container relies on host networking (mDNS/SSDP discovery for Spotify and UPnP breaks without it), the `/dev/snd` bind mount, and `group_add: ${AUDIO_GID}` matching the host's `audio` group.

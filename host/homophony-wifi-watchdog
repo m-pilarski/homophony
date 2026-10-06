@@ -1,0 +1,210 @@
+#!/usr/bin/env bash
+# Host-side recovery for a Broadcom SDIO WiFi interface that died for good.
+#
+# On the Pi Zero 2 W endpoints the dominant outage is not audio, it is the WiFi
+# firmware trapping and taking the interface with it:
+#
+#   brcmfmac: brcmf_sdio_hostmail: unexpected NAKHANDLED!
+#   brcmfmac: brcmf_sdio_dpc: failed backplane access over SDIO, halting operation
+#   brcmfmac: brcmf_sdio_checkdied: firmware trap in dongle
+#   brcmfmac: dongle trap info: type 0x3 @ epc 0x0087b7c6
+#   NetworkManager: device (wlan0): state change: activated -> unmanaged
+#                   (reason 'unmanaged-link-not-init', managed-type: 'removed')
+#
+# wlan0 is *removed*, not merely disconnected, and nothing ever re-creates it.
+# The host keeps running perfectly with no network until somebody reboots it --
+# observed at nearly three days on one room. Both observed traps landed in the
+# same second as a roam between the router's own radio and the repeater, which
+# is what the companion pin script is for.
+#
+# Recovery escalates, cheapest first:
+#
+#   1. reload the brcmfmac modules, which re-creates the interface
+#   2. clear any BSSID pin, in case the pinned AP is simply gone -- a hard pin
+#      on a headless WiFi-only box would otherwise strand it for good
+#   3. reboot
+#
+# Detection is deliberately conservative: the interface must look broken for
+# several consecutive ticks before anything happens, because every action here
+# costs the network a few seconds at best and a reboot at worst.
+set -uo pipefail
+
+# systemd gives a sane PATH, but modprobe lives in /usr/sbin and this script is
+# worth being able to run by hand from a login shell that does not have it.
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+CONFIG=/etc/default/homophony-wifi-watchdog
+# shellcheck disable=SC1090
+[ -r "${CONFIG}" ] && . "${CONFIG}"
+
+IFACE="${IFACE:-wlan0}"
+RUN_DIR="${RUN_DIR:-/run/homophony-wifi-watchdog}"
+STATE_DIR="${STATE_DIR:-/var/lib/homophony-wifi-watchdog}"
+
+# Ticks (the timer runs once a minute) before each escalation.
+RELOAD_AFTER="${RELOAD_AFTER:-3}"
+UNPIN_AFTER="${UNPIN_AFTER:-6}"
+REBOOT_AFTER="${REBOOT_AFTER:-9}"
+
+# Unload order; loading walks it in reverse. brcmfmac_cyw holds brcmfmac on
+# these kernels, so the holder has to come out first.
+MODULES="${MODULES:-brcmfmac_cyw brcmfmac}"
+
+ALLOW_REBOOT="${ALLOW_REBOOT:-1}"
+REBOOT_MIN_INTERVAL="${REBOOT_MIN_INTERVAL:-1800}"
+# Same two-tier guard as the USB DAC watchdog: a rolling ceiling is what bounds
+# an intermittent fault, since any counter cleared on recovery cannot.
+REBOOT_MAX_PER_WINDOW="${REBOOT_MAX_PER_WINDOW:-3}"
+REBOOT_WINDOW="${REBOOT_WINDOW:-86400}"
+DRY_RUN="${DRY_RUN:-0}"
+
+log() { printf '%s\n' "$*"; }
+run() { if [ "${DRY_RUN}" = "1" ]; then log "DRY_RUN: would run: $*"; else "$@"; fi; }
+
+mkdir -p "${RUN_DIR}" "${STATE_DIR}" 2>/dev/null || true
+
+FAIL_FILE="${RUN_DIR}/down-ticks"
+REBOOT_STAMP="${STATE_DIR}/last-reboot"
+REBOOT_LOG="${STATE_DIR}/reboot-history"
+
+read_num() { local v; v="$(cat "$1" 2>/dev/null)"; case "${v}" in ''|*[!0-9]*) echo 0 ;; *) echo "${v}" ;; esac; }
+
+# Reboots recorded inside the window, dropping older entries as a side effect.
+# Must always print exactly one integer: an empty history has to count as 0
+# without also tripping the caller's numeric test.
+reboots_in_window() {
+  local cutoff=$(( $1 - REBOOT_WINDOW )) kept n=0
+  kept="$(awk -v c="${cutoff}" '/^[0-9]+$/ && $1 >= c' "${REBOOT_LOG}" 2>/dev/null)"
+  if [ -n "${kept}" ]; then
+    printf '%s\n' "${kept}" >"${REBOOT_LOG}" 2>/dev/null || true
+    n="$(printf '%s\n' "${kept}" | wc -l | tr -d ' ')"
+  else
+    : >"${REBOOT_LOG}" 2>/dev/null || true
+  fi
+  printf '%s\n' "${n}"
+}
+
+nm_state() { nmcli -t -f DEVICE,STATE device 2>/dev/null | awk -F: -v d="${IFACE}" '$1 == d { print $2 }'; }
+
+# The NM profile currently bound to the interface, needed to read or clear a pin.
+nm_profile() { nmcli -t -f DEVICE,CONNECTION device 2>/dev/null | awk -F: -v d="${IFACE}" '$1 == d { print $2 }'; }
+
+gateway() { ip route show default dev "${IFACE}" 2>/dev/null | awk '/via/ { print $3; exit }'; }
+
+# Four things, cheapest first. The interface being gone from /sys is the actual
+# firmware-trap signature; the rest catch a link that is up but carrying nothing.
+wifi_ok() {
+  [ -e "/sys/class/net/${IFACE}" ] || { reason="interface ${IFACE} is gone from /sys"; return 1; }
+
+  local st gw i
+  st="$(nm_state)"
+  [ "${st}" = "connected" ] || { reason="NetworkManager reports ${IFACE} '${st:-unknown}'"; return 1; }
+
+  gw="${PING_TARGET:-$(gateway)}"
+  [ -n "${gw}" ] || { reason="no default route via ${IFACE}"; return 1; }
+
+  # Several tries: one lost packet on a busy 2.4GHz channel is not an outage.
+  for i in 1 2 3; do
+    ping -c1 -W2 -I "${IFACE}" "${gw}" >/dev/null 2>&1 && return 0
+  done
+  reason="gateway ${gw} unreachable via ${IFACE}"
+  return 1
+}
+
+reload_modules() {
+  local m loaded=""
+  log "reloading WiFi driver (${MODULES})"
+  for m in ${MODULES}; do
+    if [ -d "/sys/module/${m}" ]; then
+      run modprobe -r "${m}" || log "  could not remove ${m}"
+      loaded="${m} ${loaded}"
+    fi
+  done
+  [ -n "${loaded}" ] || log "  no module to remove; loading anyway"
+  sleep 2
+  # Reverse order: the holder last, and it pulls its dependency in with it.
+  for m in ${loaded:-${MODULES}}; do
+    run modprobe "${m}" || log "  could not load ${m}"
+  done
+  sleep 5
+  # NM usually picks the new netdev up by itself; nudge it in case it does not.
+  run nmcli device connect "${IFACE}" >/dev/null 2>&1 || true
+}
+
+clear_bssid_pin() {
+  local prof pin
+  prof="$(nm_profile)"
+  [ -n "${prof}" ] || prof="$(nmcli -t -f NAME,TYPE connection show 2>/dev/null | awk -F: '$2 == "802-11-wireless" { print $1; exit }')"
+  if [ -z "${prof}" ]; then
+    log "no wireless profile found; cannot check for a BSSID pin"
+    return 1
+  fi
+  pin="$(nmcli -t -f 802-11-wireless.bssid connection show "${prof}" 2>/dev/null | cut -d: -f2-)"
+  case "${pin}" in
+    ''|'--')
+      log "profile '${prof}' has no BSSID pin to clear"
+      return 1
+      ;;
+  esac
+  log "clearing BSSID pin ${pin} from '${prof}' -- the pinned AP may be gone; re-pin with pin-wifi-bssid.sh once the link is stable"
+  run nmcli connection modify "${prof}" 802-11-wireless.bssid "" || return 1
+  run nmcli connection up "${prof}" >/dev/null 2>&1 || true
+  return 0
+}
+
+reason=""
+if wifi_ok; then
+  if [ "$(read_num "${FAIL_FILE}")" != 0 ]; then
+    log "${IFACE} healthy again; clearing watchdog state"
+  fi
+  rm -f "${FAIL_FILE}" 2>/dev/null
+  exit 0
+fi
+
+ticks=$(( $(read_num "${FAIL_FILE}") + 1 ))
+printf '%s\n' "${ticks}" >"${FAIL_FILE}" 2>/dev/null || true
+log "${IFACE} down (tick ${ticks}): ${reason}"
+
+# Each step fires once, on the tick it is due. Repeating a driver reload every
+# minute would keep tearing down a link that may just be slow to come back.
+if [ "${ticks}" -eq "${RELOAD_AFTER}" ]; then
+  reload_modules
+  exit 0
+fi
+
+if [ "${ticks}" -eq "${UNPIN_AFTER}" ]; then
+  clear_bssid_pin || log "nothing to unpin; waiting for the reboot threshold"
+  exit 0
+fi
+
+if [ "${ticks}" -lt "${REBOOT_AFTER}" ]; then
+  exit 0
+fi
+
+if [ "${ALLOW_REBOOT}" != "1" ]; then
+  log "${IFACE} still down after ${ticks} ticks; ALLOW_REBOOT=0, leaving the host alone"
+  exit 0
+fi
+
+now="$(date +%s)"
+last="$(read_num "${REBOOT_STAMP}")"
+if [ "${last}" -gt 0 ] && [ $(( now - last )) -lt "${REBOOT_MIN_INTERVAL}" ]; then
+  log "${IFACE} down but last reboot was $(( now - last ))s ago (< ${REBOOT_MIN_INTERVAL}s); holding off"
+  exit 0
+fi
+
+recent="$(reboots_in_window "${now}")"
+if [ "${recent}" -ge "${REBOOT_MAX_PER_WINDOW}" ]; then
+  log "${IFACE} down, but ${recent} reboot(s) already in the last ${REBOOT_WINDOW}s (max ${REBOOT_MAX_PER_WINDOW}); refusing to reboot again -- this needs a human, not another reboot"
+  exit 0
+fi
+
+log "${IFACE} down after ${ticks} ticks, a driver reload and a pin clear; rebooting"
+if [ "${DRY_RUN}" = "1" ]; then
+  log "DRY_RUN: would reboot now"
+  exit 0
+fi
+printf '%s\n' "${now}" >"${REBOOT_STAMP}" 2>/dev/null || true
+printf '%s\n' "${now}" >>"${REBOOT_LOG}" 2>/dev/null || true
+sync
+exec systemctl reboot

@@ -71,12 +71,18 @@ REBOOT_LOG="${STATE_DIR}/reboot-history"
 read_num() { local v; v="$(cat "$1" 2>/dev/null)"; case "${v}" in ''|*[!0-9]*) echo 0 ;; *) echo "${v}" ;; esac; }
 
 # Reboots recorded inside the window, dropping older entries as a side effect.
+# Must always print exactly one integer: an empty history has to count as 0
+# without also tripping the caller's numeric test.
 reboots_in_window() {
-  local cutoff=$(( $1 - REBOOT_WINDOW )) kept
+  local cutoff=$(( $1 - REBOOT_WINDOW )) kept n=0
   kept="$(awk -v c="${cutoff}" '/^[0-9]+$/ && $1 >= c' "${REBOOT_LOG}" 2>/dev/null)"
-  printf '%s' "${kept}" >"${REBOOT_LOG}" 2>/dev/null || true
-  [ -n "${kept}" ] && printf '\n' >>"${REBOOT_LOG}" 2>/dev/null
-  printf '%s\n' "${kept}" | grep -c '[0-9]' 2>/dev/null || echo 0
+  if [ -n "${kept}" ]; then
+    printf '%s\n' "${kept}" >"${REBOOT_LOG}" 2>/dev/null || true
+    n="$(printf '%s\n' "${kept}" | wc -l | tr -d ' ')"
+  else
+    : >"${REBOOT_LOG}" 2>/dev/null || true
+  fi
+  printf '%s\n' "${n}"
 }
 
 # The card to watch. Derived from the stack's own ALSA_SINK so there is one
