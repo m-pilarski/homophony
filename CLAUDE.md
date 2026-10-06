@@ -175,12 +175,40 @@ Two things to keep in mind when editing it:
 - **`iw` and `wpa_cli` are not installed** on these hosts, and `modprobe` is not on a login shell's
   PATH. Detection goes through `nmcli` and `/sys/class/net`, and the script sets its own PATH.
 
-`pin-wifi-bssid.sh` pins `wlan0` to one BSSID so the roam that triggers the trap stops happening;
-both APs share one SSID *and* channel 11, and the Pis are stationary, so roaming buys nothing. It
-re-associates via `systemd-run` rather than inline, because over SSH the link drop would otherwise
+`pin-wifi-bssid.sh` pins `wlan0` to one BSSID, which is *preventive* where the watchdog is
+*reactive*: the watchdog turns a multi-day blackout into a ~5 minute blip, the pin removes the
+association churn the traps ride in on. The evidence for that churn, from Wohnzimmer on 2026-10-06:
+
+```
+15:00:52  DISCONNECTED from 34:e1:a9:65:8a:58 (router)
+15:00:52  Associated with 00:7a:a4:d5:80:71 (repeater)   freq 2412   <- channel 1
+15:00:56  DISCONNECTED from repeater, reason=8
+15:00:57  Trying to associate with 34:e1:a9:65:8a:58     freq 2462   <- channel 11
+15:00:57  Associated with router
+15:00:57  brcmfmac: failed backplane access over SDIO, halting operation
+```
+
+Router -> repeater -> router in five seconds, across a channel change, and the firmware died on the
+third association. Schlafzimmer's trap likewise landed in the same second as a `CTRL-EVENT-CONNECTED`.
+The Pis are stationary, so roaming buys them nothing. Note `nmcli` currently reports both APs on
+channel 11, but at crash time the repeater was on channel 1 -- a roam there meant a channel switch.
+
+Two traps for a cause is suggestive, not proven, and the watchdog recovers the host whatever the
+cause, so the pin is optional hardening rather than the fix.
+
+It re-associates via `systemd-run` rather than inline, because over SSH the link drop would otherwise
 kill `nmcli` halfway. **The pin depends on the watchdog being installed**: step 2 above is what stops
 a hard pin stranding a headless box if the pinned AP ever disappears. Do not pin a host that has no
 watchdog.
+
+**Choosing the BSSID is the hard part, and automatic selection is not trustworthy here.** A scan
+taken while associated over-reports the AP you are on and under-reports its neighbours, so a
+single-scan "strongest" just re-picks the current AP -- which is the one you may be trying to leave.
+Worse, *while a pin is in place the alternatives often do not appear in a scan at all*, so the pin
+has to come off before anything can be measured. `--best` therefore takes the best of `SCANS`
+rescans per BSSID and additionally requires `MARGIN` before switching away from the current AP, and
+it prints what it measured -- treat its answer as a suggestion and sanity-check it against readings
+taken with no pin set.
 
 NetworkManager owns the config on these hosts even though `/etc/netplan/90-NM-*.yaml` exists — the
 `netplan` CLI is not installed and NM *writes* those files, so `nmcli` is the source of truth and
