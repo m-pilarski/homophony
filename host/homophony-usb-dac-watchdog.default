@@ -1,0 +1,33 @@
+# Config for homophony-usb-dac-watchdog. Installed to
+# /etc/default/homophony-usb-dac-watchdog; every value is optional.
+
+# The ALSA card to watch. Left unset it is derived from ALSA_SINK in the stack's
+# .env, which is the single source of truth -- set it only to override that.
+#CARD=AUDIO
+
+# Where that .env lives.
+#STACK_ENV=/home/moritz/docker/stacks/homophony/.env
+
+# Ticks (the timer runs once a minute) the card must be missing before the port
+# re-enable, and before the reboot fallback.
+#RESET_AFTER=2
+#REBOOT_AFTER=5
+
+# Set to 0 to make the watchdog log loudly but never reboot the host.
+#ALLOW_REBOOT=1
+
+# Never reboot more often than this, and give up entirely after this many
+# consecutive reboots that did not bring the card back. That counter resets as
+# soon as the card is seen, so it bounds a DAC that is gone for good.
+#REBOOT_MIN_INTERVAL=3600
+#REBOOT_MAX=2
+
+# Hard ceiling across a rolling window, counted even when the card keeps coming
+# back. This is what bounds an *intermittent* DAC: REBOOT_MAX cannot, because
+# each reappearance clears it and leaves only REBOOT_MIN_INTERVAL in the way.
+# Set REBOOT_MAX_PER_WINDOW=0 to stop the watchdog rebooting at all.
+#REBOOT_MAX_PER_WINDOW=3
+#REBOOT_WINDOW=86400
+
+# Log what it would do, change nothing. Useful for testing the detection path.
+#DRY_RUN=0

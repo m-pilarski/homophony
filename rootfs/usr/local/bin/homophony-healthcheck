@@ -106,6 +106,25 @@ sink_exists() {
   )
 }
 
+# The card token out of an ALSA_SINK like "plughw:CARD=AUDIO,DEV=0". Empty when
+# ALSA_SINK names no card at all (null, or a bare hw:0,0 index).
+alsa_sink_card() {
+  case "$1" in
+    *CARD=*) printf '%s\n' "${1#*CARD=}" | cut -d, -f1 ;;
+    *)       printf '\n' ;;
+  esac
+}
+
+# Whether the host still offers that card. /proc/asound belongs to the
+# container's own procfs and never lists the host's sound cards, so the list has
+# to come through the /dev/snd nodes instead.
+card_present() {
+  (
+    exec 2>/dev/null
+    timeout 3 aplay -l | grep -qE "^card [0-9]+: $1 \["
+  )
+}
+
 mpd_ok() {
   local line
   line="$( ( exec 2>/dev/null; timeout 3 bash -c "exec 3<>/dev/tcp/127.0.0.1/$1 && head -n1 <&3" ) )" \
@@ -157,11 +176,31 @@ arg_value() {
 # PulseAudio — the shared mixer everything feeds; always required.
 pulse_ok || problems+=("pulseaudio unresponsive")
 
-# The audio_output sink. Missing while a USB DAC re-enumerates, which
-# pulse-sink-watch repairs; missing forever once the device is gone for good.
-# ALSA_SINK=auto has no fixed sink by design, so there is nothing to look for.
+# The ALSA card named by ALSA_SINK, and the audio_output sink built on top of it.
+# These are two different faults and only one of them is ours. A USB DAC that
+# fell off the bus leaves pulse-sink-watch with nothing to rebuild and no restart
+# of this container can bring it back, so it is reported as its own condition
+# rather than as a missing sink -- the message is the difference between looking
+# in here and looking at the host. Both stay soft: the host-side watchdog
+# re-enumerates the port well inside the tolerance window, so only a DAC that is
+# gone for good survives it.
+# ALSA_SINK=auto has no fixed card or sink by design, so there is nothing to look for.
 if [ "${ALSA_SINK:-default}" != "auto" ]; then
-  soft_check audio-sink "no audio_output sink" sink_exists audio_output
+  alsa_card="$(alsa_sink_card "${ALSA_SINK:-}")"
+  card_missing=0
+  if [ -n "${alsa_card}" ] && ! card_present "${alsa_card}"; then
+    card_missing=1
+  fi
+
+  if [ "${card_missing}" = 1 ]; then
+    # soft_check runs the command it is given; there is nothing left to probe
+    # once the card is gone, so hand it one that simply fails.
+    soft_check alsa-card "ALSA card ${alsa_card} absent from the host" false
+    rm -f "${STATE_DIR}/audio-sink" 2>/dev/null
+  else
+    rm -f "${STATE_DIR}/alsa-card" 2>/dev/null
+    soft_check audio-sink "no audio_output sink" sink_exists audio_output
+  fi
 fi
 
 # Hostname resolution. A resolv.conf with no nameserver is what a container that

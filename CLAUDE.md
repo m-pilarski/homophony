@@ -96,6 +96,51 @@ An empty `/etc/resolv.conf` is a hard failure because it is exactly what a conta
 
 The compose files add an `autoheal=true` label plus a `willfarrell/autoheal` companion container (Docker does not restart on health alone); keep both compose files in sync.
 
+### Host-side USB DAC watchdog (Raspberry Pi endpoints)
+
+`host/` is the one part of this repo that is **not** in the image: it installs onto the Pi hosts
+themselves. It exists because a USB DAC that falls off the bus is a fault the container cannot reach.
+When the hub disables the port (`usb usb1-port1: disabled by hub (EMI?)` → `USB disconnect` →
+`attempt power cycle`) the card is gone from ALSA for the rest of the boot, `module-alsa-sink` can
+never load, PulseAudio falls back to `auto_null`, and `pulse-sink-watch` has nothing to rebuild. No
+container restart fixes it, so the autoheal restart that the health check eventually triggers just
+loops. `/sys` is read-only in the container, so the port can only be driven from the host.
+
+`homophony-usb-dac-watchdog` is a systemd timer (once a minute) that watches for the ALSA card named
+by `ALSA_SINK` in `.env` — one source of truth, overridable via `CARD=` in
+`/etc/default/homophony-usb-dac-watchdog` — and escalates only while it is missing:
+
+1. after `RESET_AFTER` ticks, write `0` to the port's sysfs `disable` attribute, forcing a
+   re-enumeration without touching the driver;
+2. after `REBOOT_AFTER` ticks, reboot (`ALLOW_REBOOT=0` disables this).
+
+**Never unbind/bind `dwc_otg`** to force re-enumeration on these Pis. The rebind path is broken:
+`dwc_otg_driver_probe` fails and its error path calls `dwc_otg_driver_remove` on a half-initialised
+device, which oopses the kernel and takes USB down completely until a reboot anyway.
+
+Reboots are guarded three ways, and the third one matters most:
+
+- `REBOOT_MIN_INTERVAL` (default 1h) — minimum spacing.
+- `REBOOT_MAX` (default 2) consecutive reboots that failed to bring the card back, after which it
+  only logs. This resets when the card is seen, so it bounds a DAC that is **gone for good**.
+- `REBOOT_MAX_PER_WINDOW` (default 3) per `REBOOT_WINDOW` (default 24h), counted across the card
+  coming and going and never reset by it. This is what bounds an **intermittent** DAC. `REBOOT_MAX`
+  cannot: each reappearance clears it, leaving only `REBOOT_MIN_INTERVAL` between reboots — one an
+  hour forever. A flaky DAC is intermittent by nature, so without this ceiling the watchdog turns a
+  hardware fault into an indefinite hourly reboot cycle. Set it to `0` to disable rebooting entirely.
+
+`DRY_RUN=1` logs the decisions and changes nothing.
+
+Install with `sudo host/install-usb-dac-watchdog.sh` on a Pi. Not for the x86 server, which plays out
+of onboard analog and has no USB DAC to lose. On `.201` the DAC is I2S rather than USB, so the port
+re-enable is a no-op there and only the reboot fallback can apply.
+
+The matching container-side piece is in the health check: the card named by `ALSA_SINK` missing is
+reported as its own soft condition (`ALSA card X absent from the host`) rather than as
+`no audio_output sink`, because the two want you looking in different places. Note `/proc/asound`
+inside the container is the container's own procfs and never lists the host's cards — the card list
+has to come through `/dev/snd`, which is what `aplay -l` reads.
+
 ### Runtime constraints
 
 The container relies on host networking (mDNS/SSDP discovery for Spotify and UPnP breaks without it), the `/dev/snd` bind mount, and `group_add: ${AUDIO_GID}` matching the host's `audio` group.

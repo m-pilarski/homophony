@@ -1,0 +1,13 @@
+[Unit]
+Description=Poll for a USB DAC that fell off the bus
+
+[Timer]
+# Late enough that a normal boot has enumerated USB and brought the card up, so
+# the watchdog never counts a cold start as a fault.
+OnBootSec=3min
+OnUnitActiveSec=1min
+AccuracySec=10s
+Unit=homophony-usb-dac-watchdog.service
+
+[Install]
+WantedBy=timers.target

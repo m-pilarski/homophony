@@ -1,0 +1,12 @@
+[Unit]
+Description=Recover a USB DAC that fell off the bus
+Documentation=https://github.com/m-pilarski/homophony
+ConditionPathExists=/proc/asound/cards
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/homophony-usb-dac-watchdog
+# The script reboots the host as its last resort, so it needs to run as root and
+# must not be killed halfway through that.
+User=root
+TimeoutStartSec=60

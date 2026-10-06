@@ -1,0 +1,203 @@
+#!/usr/bin/env bash
+# Host-side recovery for a USB DAC that fell off the bus.
+#
+# The container cannot fix this one. When the hub disables the port --
+#
+#   usb 1-1: Product: SMSL USB AUDIO
+#   usb usb1-port1: disabled by hub (EMI?), re-enabling...
+#   usb 1-1: USB disconnect, device number 3
+#   usb usb1-port1: attempt power cycle
+#
+# -- the card is gone from ALSA for the rest of the boot, module-alsa-sink can
+# never load, and PulseAudio falls back to auto_null. pulse-sink-watch has
+# nothing to rebuild and restarting the container changes nothing, because the
+# fault is below it. /sys is read-only in the container, so the port can only be
+# driven from out here.
+#
+# Recovery escalates, cheapest first:
+#
+#   1. re-enable the port through its sysfs "disable" attribute, which forces a
+#      re-enumeration without touching the driver
+#   2. reboot, if the port re-enable did not bring the card back
+#
+# Never unbind/bind dwc_otg to force re-enumeration. The rebind path is broken on
+# these Pis: dwc_otg_driver_probe fails and its error path calls
+# dwc_otg_driver_remove on a half-initialised device, which oopses the kernel and
+# takes USB down completely until a reboot anyway.
+#
+# Both escalations are guarded. Reboots are rate-limited, and after REBOOT_MAX
+# consecutive reboots that did not bring the card back the watchdog stops trying:
+# a DAC that is unplugged, dead or simply not fitted must not put the host into a
+# reboot loop. The counter clears the moment the card is seen again.
+set -uo pipefail
+
+CONFIG=/etc/default/homophony-usb-dac-watchdog
+# shellcheck disable=SC1090
+[ -r "${CONFIG}" ] && . "${CONFIG}"
+
+STACK_ENV="${STACK_ENV:-/home/moritz/docker/stacks/homophony/.env}"
+RUN_DIR="${RUN_DIR:-/run/homophony-usb-dac-watchdog}"
+STATE_DIR="${STATE_DIR:-/var/lib/homophony-usb-dac-watchdog}"
+
+# Ticks the card must be missing before each escalation. The timer runs once a
+# minute, so these are roughly minutes.
+RESET_AFTER="${RESET_AFTER:-2}"
+REBOOT_AFTER="${REBOOT_AFTER:-5}"
+
+ALLOW_REBOOT="${ALLOW_REBOOT:-1}"
+REBOOT_MIN_INTERVAL="${REBOOT_MIN_INTERVAL:-3600}"
+REBOOT_MAX="${REBOOT_MAX:-2}"
+# Hard ceiling on reboots in a rolling window, counted across the card coming
+# and going. REBOOT_MAX alone is not enough: it only counts *consecutive*
+# reboots that failed, and a card that returns on each boot and vanishes again
+# clears that counter every time, which leaves nothing but REBOOT_MIN_INTERVAL
+# between reboots -- one an hour, indefinitely. An intermittent DAC is exactly
+# that shape, so this window is what actually bounds the damage.
+REBOOT_MAX_PER_WINDOW="${REBOOT_MAX_PER_WINDOW:-3}"
+REBOOT_WINDOW="${REBOOT_WINDOW:-86400}"
+DRY_RUN="${DRY_RUN:-0}"
+
+log() { printf '%s\n' "$*"; }
+
+mkdir -p "${RUN_DIR}" "${STATE_DIR}" 2>/dev/null || true
+
+FAIL_FILE="${RUN_DIR}/missing-ticks"
+REBOOT_STAMP="${STATE_DIR}/last-reboot"
+REBOOT_COUNT="${STATE_DIR}/reboot-attempts"
+# One epoch second per line, pruned to REBOOT_WINDOW. Never cleared by the card
+# coming back -- that is the whole point of it.
+REBOOT_LOG="${STATE_DIR}/reboot-history"
+
+read_num() { local v; v="$(cat "$1" 2>/dev/null)"; case "${v}" in ''|*[!0-9]*) echo 0 ;; *) echo "${v}" ;; esac; }
+
+# Reboots recorded inside the window, dropping older entries as a side effect.
+reboots_in_window() {
+  local cutoff=$(( $1 - REBOOT_WINDOW )) kept
+  kept="$(awk -v c="${cutoff}" '/^[0-9]+$/ && $1 >= c' "${REBOOT_LOG}" 2>/dev/null)"
+  printf '%s' "${kept}" >"${REBOOT_LOG}" 2>/dev/null || true
+  [ -n "${kept}" ] && printf '\n' >>"${REBOOT_LOG}" 2>/dev/null
+  printf '%s\n' "${kept}" | grep -c '[0-9]' 2>/dev/null || echo 0
+}
+
+# The card to watch. Derived from the stack's own ALSA_SINK so there is one
+# source of truth; CARD in the config file overrides it.
+resolve_card() {
+  if [ -n "${CARD:-}" ]; then printf '%s\n' "${CARD}"; return; fi
+  local sink
+  sink="$(sed -n 's/^[[:space:]]*ALSA_SINK=//p' "${STACK_ENV}" 2>/dev/null | tail -1 | tr -d '"'"'"'')"
+  case "${sink}" in
+    *CARD=*) printf '%s\n' "${sink#*CARD=}" | cut -d, -f1 ;;
+    *)       printf '\n' ;;
+  esac
+}
+
+card_present() { grep -qE "^[[:space:]]*[0-9]+[[:space:]]+\[$1[[:space:]]*\]" /proc/asound/cards 2>/dev/null; }
+
+# Re-enable every root-hub port the kernel has disabled. There is one downstream
+# port on a Pi Zero 2 W, but globbing keeps this honest on anything else.
+reenable_ports() {
+  local port attr did=0
+  for attr in /sys/bus/usb/devices/usb*/*-0:1.0/*-port*/disable; do
+    [ -e "${attr}" ] || continue
+    port="$(basename "$(dirname "${attr}")")"
+    if [ "$(cat "${attr}" 2>/dev/null)" = "1" ]; then
+      log "port ${port} is disabled; re-enabling"
+      if [ "${DRY_RUN}" = "1" ]; then
+        log "DRY_RUN: would write 0 to ${attr}"
+      else
+        echo 0 >"${attr}" 2>/dev/null && did=1 || log "failed to write ${attr}"
+      fi
+    fi
+  done
+  [ "${did}" = 1 ]
+}
+
+# Only the ports worth looking at: one disabled by the hub, or one with
+# something still attached. A host with a couple of dozen empty root-hub ports
+# would otherwise bury the interesting line.
+port_diagnostics() {
+  local attr dir disabled state
+  for attr in /sys/bus/usb/devices/usb*/*-0:1.0/*-port*/disable; do
+    [ -e "${attr}" ] || continue
+    dir="$(dirname "${attr}")"
+    disabled="$(cat "${attr}" 2>/dev/null)"
+    state="$(cat "${dir}/state" 2>/dev/null)"
+    [ "${disabled}" = "1" ] || [ "${state}" != "not attached" ] || continue
+    log "  $(basename "${dir}"): disable=${disabled} state=${state} over_current_count=$(cat "${dir}/over_current_count" 2>/dev/null)"
+  done
+}
+
+card="$(resolve_card)"
+if [ -z "${card}" ]; then
+  log "no ALSA card to watch (ALSA_SINK in ${STACK_ENV} names none); nothing to do"
+  exit 0
+fi
+
+if card_present "${card}"; then
+  # This clears the consecutive-failure counter only. The rolling reboot history
+  # deliberately survives, so a card that keeps coming back and vanishing again
+  # cannot win itself an unlimited reboot budget an hour at a time.
+  if [ "$(read_num "${REBOOT_COUNT}")" != 0 ] || [ "$(read_num "${FAIL_FILE}")" != 0 ]; then
+    log "card ${card} present again; clearing watchdog state"
+  fi
+  rm -f "${FAIL_FILE}" "${REBOOT_COUNT}" 2>/dev/null
+  exit 0
+fi
+
+ticks=$(( $(read_num "${FAIL_FILE}") + 1 ))
+printf '%s\n' "${ticks}" >"${FAIL_FILE}" 2>/dev/null || true
+log "ALSA card ${card} absent (tick ${ticks})"
+
+if [ "${ticks}" -lt "${RESET_AFTER}" ]; then
+  exit 0
+fi
+
+if [ "${ticks}" -eq "${RESET_AFTER}" ]; then
+  port_diagnostics
+fi
+
+if [ "${ticks}" -ge "${RESET_AFTER}" ] && [ "${ticks}" -lt "${REBOOT_AFTER}" ]; then
+  if reenable_ports; then
+    log "port re-enable issued; pulse-sink-watch will rebuild the sink if the card returns"
+  else
+    log "no disabled port to re-enable; the device is not on the bus at all"
+  fi
+  exit 0
+fi
+
+# Past here the port re-enable has had several ticks to work and has not.
+if [ "${ALLOW_REBOOT}" != "1" ]; then
+  log "card ${card} still absent after ${ticks} ticks; ALLOW_REBOOT=0, leaving the host alone"
+  exit 0
+fi
+
+attempts="$(read_num "${REBOOT_COUNT}")"
+if [ "${attempts}" -ge "${REBOOT_MAX}" ]; then
+  log "card ${card} still absent after ${attempts} reboot(s); rebooting does not fix it -- physical intervention needed (cable, power, or the DAC itself)"
+  exit 0
+fi
+
+last="$(read_num "${REBOOT_STAMP}")"
+now="$(date +%s)"
+if [ "${last}" -gt 0 ] && [ $(( now - last )) -lt "${REBOOT_MIN_INTERVAL}" ]; then
+  log "card ${card} absent but last reboot was $(( now - last ))s ago (< ${REBOOT_MIN_INTERVAL}s); holding off"
+  exit 0
+fi
+
+recent="$(reboots_in_window "${now}")"
+if [ "${recent}" -ge "${REBOOT_MAX_PER_WINDOW}" ]; then
+  log "card ${card} absent, but ${recent} reboot(s) already in the last ${REBOOT_WINDOW}s (max ${REBOOT_MAX_PER_WINDOW}); refusing to reboot again -- the DAC is flapping and that is a hardware fault, not something a reboot fixes"
+  exit 0
+fi
+
+log "card ${card} absent after ${ticks} ticks and a port re-enable; rebooting (attempt $(( attempts + 1 ))/${REBOOT_MAX})"
+port_diagnostics
+if [ "${DRY_RUN}" = "1" ]; then
+  log "DRY_RUN: would reboot now"
+  exit 0
+fi
+printf '%s\n' "${now}" >"${REBOOT_STAMP}" 2>/dev/null || true
+printf '%s\n' "$(( attempts + 1 ))" >"${REBOOT_COUNT}" 2>/dev/null || true
+printf '%s\n' "${now}" >>"${REBOOT_LOG}" 2>/dev/null || true
+sync
+exec systemctl reboot
